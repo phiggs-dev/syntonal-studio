@@ -1,0 +1,14 @@
+{
+  "upstream_repository": null,
+  "projects_directory": "data/projects",
+  "outputs_directory": "data/outputs",
+  "huggingface_cache": null,
+  "model": "m-a-p/YuE2-3B",
+  "vae": "m-a-p/YuE2-Vae",
+  "model_revision": null,
+  "vae_revision": null,
+  "offline": false,
+  "sheetsage_python": null,
+  "sheetsage_model": null,
+  "ffmpeg": "ffmpeg"
+}

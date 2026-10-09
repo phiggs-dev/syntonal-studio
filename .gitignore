@@ -1,0 +1,122 @@
+# Local application data, recordings, and private verification/recovery material.
+/data/
+/.verification/
+/outputs/
+/recordings/
+/projects/
+
+# Python environments, bytecode, build metadata, and tool caches.
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+/build/
+/dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pytype/
+.tox/
+.nox/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Frontend dependencies, compiled output, and coverage reports.
+node_modules/
+/frontend/dist/
+/frontend/coverage/
+.vite/
+*.tsbuildinfo
+
+# Logs, crash dumps, and temporary/editor recovery files.
+*.log
+*.stackdump
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+
+# Credentials and machine-specific configuration. Review example files before publishing.
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
+secrets.json
+.netrc
+.npmrc
+.pypirc
+/.aws/
+/.ssh/
+/.config/gh/
+/settings.json
+/config/settings.json
+/config/settings.local*.json
+/config/credentials*.json
+/config/secrets*.json
+
+# Local databases and their journals.
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3-journal
+*.sqlite3-wal
+*.sqlite3-shm
+
+# Model downloads and generated inference artifacts.
+# Add a narrowly scoped exception if an intentionally public test fixture is needed.
+/models/
+/checkpoints/
+/weights/
+/.cache/
+/huggingface/
+*.safetensors
+*.gguf
+*.ggml
+*.ckpt
+*.pt
+*.pth
+*.onnx
+*.npy
+*.npz
+*.flac
+*.wav
+*.mp3
+*.ogg
+*.m4a
+
+# Machine-specific editor settings and operating-system metadata.
+.vscode/
+.idea/
+*.code-workspace
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# One-time local migration helper; depends on private .verification scripts.
+/scripts/rename-project-folder.ps1
+
+# Installer-managed upstream source, tools, and settings backups.
+.runtime/
+
+# Private local development documentation.
+/docs/
+
+# Local agent instructions.
+AGENTS.md
