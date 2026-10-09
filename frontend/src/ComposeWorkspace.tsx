@@ -1,7 +1,9 @@
 /** Compose stores immutable ABC versions; exact reuse keeps the native plan request and tokens. */
 import { useEffect, useRef, useState } from "react";
-import { AbcEditor, ScorePreview } from "./AbcEditor";
-import { ScorePlayback } from "./ScorePlayback";
+import { GenerationProgress } from "./GenerationProgress";
+import { isActiveGeneration, primaryGeneration, prioritizeGenerationJobs } from "./generationProgressModel";
+import { VisualScoreEditor } from "./VisualScoreEditor";
+import type { EditorMetadata } from "./visualScore";
 import { DraftOperationGate, scoreAncestry } from "./compositionDraft";
 import {
   cancelGeneration,
@@ -35,6 +37,7 @@ interface Props {
   openPlanId: string | null;
   openPlanNonce: number;
   active: boolean;
+  updatesLive?: boolean;
 }
 const emptyRequest: GenerationRequest = {
   title: "",
@@ -54,7 +57,12 @@ export default function ComposeWorkspace({
   openPlanId,
   openPlanNonce,
   active,
+  updatesLive = true,
 }: Props) {
+  const compositionJobs = prioritizeGenerationJobs(jobs.filter(job =>
+    job.request.operation === "plan" || job.request.operation === "exact_plan" || job.request.score_version_id,
+  ));
+  const currentJob = primaryGeneration(compositionJobs);
   const [request, setRequest] = useState(emptyRequest);
   const [guidance, setGuidance] = useState("");
   const [inputBaseline, setInputBaseline] = useState(
@@ -67,6 +75,9 @@ export default function ComposeWorkspace({
   const [score, setScore] = useState<ScoreVersion | null>(null);
   const [abc, setAbc] = useState("");
   const [baseline, setBaseline] = useState("");
+  const [editorMetadata, setEditorMetadata] = useState<EditorMetadata | null>(null);
+  const [metadataBaseline, setMetadataBaseline] = useState("null");
+  const [editorRevision, setEditorRevision] = useState(0);
   const [scoreTitle, setScoreTitle] = useState("");
   const [busy, setBusy] = useState(false);
   const operations = useRef(new DraftOperationGate());
@@ -86,7 +97,7 @@ export default function ComposeWorkspace({
   const [allowTempo, setAllowTempo] = useState(false);
   const [exactConfirm, setExactConfirm] = useState(false);
   const [pendingDraft, setPendingDraft] = useState<ReuseDraft | null>(null);
-  const dirty = abc !== baseline;
+  const dirty = abc !== baseline || JSON.stringify(editorMetadata) !== metadataBaseline;
   const inputsDirty =
     JSON.stringify(request) !== inputBaseline ||
     guidance !== (request.cfg_scale === null ? "" : String(request.cfg_scale));
@@ -152,6 +163,9 @@ export default function ComposeWorkspace({
     setReusedSource(null);
     setAbc(text);
     setBaseline(text);
+    setEditorMetadata(null);
+    setMetadataBaseline("null");
+    setEditorRevision(previous => previous + 1);
     setScoreTitle(title);
     setValidation(null);
     setComparison(null);
@@ -186,7 +200,10 @@ export default function ComposeWorkspace({
     setScore(value);
     setPlan(null);
     replace(value.abc, value.title);
-    setRequest((previous) => ({ ...previous, project_id: value.project_id }));
+    const metadata = value.editor_metadata ?? null;
+    setEditorMetadata(metadata);
+    setMetadataBaseline(JSON.stringify(metadata));
+    setRequest((previous) => ({ ...previous, project_id: value.project_id, ...(metadata ? { lyrics: metadata.lyrics } : {}) }));
   }
   function nativeRequest(): GenerationRequest {
     if (!validateSeed(request.seed))
@@ -228,11 +245,16 @@ export default function ComposeWorkspace({
           {notice}
         </p>
       )}
-      {warnings.map((warning, index) => (
-        <p className="notice warning" key={index}>
-          {warning}
-        </p>
-      ))}
+      {warnings.length > 0 && (
+        <details className="notice warning library-warnings">
+          <summary>Some saved items need attention ({warnings.length})</summary>
+          <ul>
+            {warnings.map((warning, index) => (
+              <li key={index}>{warning}</li>
+            ))}
+          </ul>
+        </details>
+      )}
       {pendingPlan && (
         <div className="notice" role="status">
           <p>
@@ -294,7 +316,14 @@ export default function ComposeWorkspace({
             Generate a symbolic plan without audio, or render a saved score
             using these inputs.
           </p>
-          <fieldset className="settings-fieldset" disabled={busy}>
+          {currentJob && <div className="active-generation" tabIndex={-1}>
+          <h3>{currentJob.title || "Untitled composition"}</h3>
+          <GenerationProgress job={currentJob} updatesLive={updatesLive} />
+          <button type="button" className="text-button" disabled={busy || currentJob.cancel_requested}
+            onClick={() => void action(async () => rememberJob(await cancelGeneration(currentJob.id)))}
+          >{currentJob.cancel_requested ? "Stopping…" : "Cancel"}</button>
+        </div>}
+        <fieldset className="settings-fieldset" disabled={busy}>
             <div className="field">
               <label htmlFor="compose-project">Project</label>
               <select
@@ -413,20 +442,16 @@ export default function ComposeWorkspace({
             </button>
           </fieldset>
           <h3>Composition jobs</h3>
-          {jobs
-            .filter(
-              (job) =>
-                job.request.operation === "plan" ||
-                job.request.operation === "exact_plan" ||
-                job.request.score_version_id,
-            )
-            .map((job) => (
+          {compositionJobs.map((job) => (
               <article className="job-card" key={job.id}>
                 <strong>{job.title || job.id}</strong>
                 <p>
                   {job.request.operation === "plan" ? "Plan" : "Recording"} ·{" "}
                   {job.stage} · {job.token_count} tokens
                 </p>
+                {isActiveGeneration(job) && job.id !== currentJob?.id && (
+                  <GenerationProgress job={job} updatesLive={updatesLive} />
+                )}
                 {job.error && <p className="notice error">{job.error}</p>}
                 {job.truncated && (
                   <p className="notice warning">
@@ -617,11 +642,24 @@ export default function ComposeWorkspace({
             </div>
           </fieldset>
           <div inert={busy}>
-            <AbcEditor value={abc} onChange={setAbc} />
+            <VisualScoreEditor
+              key={editorRevision}
+              abc={abc}
+              lyrics={request.lyrics}
+              onChange={setAbc}
+              metadata={editorMetadata}
+              onMetadataChange={setEditorMetadata}
+              validation={currentValidation}
+              active={active && !busy}
+              onValidate={() => void action(async () => setValidation({
+                abc,
+                value: await composePost<ValidationReport>("validate", { abc }),
+              }))}
+            />
           </div>
           <p className="field-help">
             {abc.length.toLocaleString()} characters ·{" "}
-            {dirty ? "Unsaved ABC changes" : "ABC matches loaded source"} ·
+            {dirty ? "Unsaved composition changes" : "Draft matches saved source"} ·
             Ctrl/Cmd+Z undo · Ctrl/Cmd+F search
           </p>
           <fieldset className="settings-fieldset" disabled={busy}>
@@ -634,11 +672,13 @@ export default function ComposeWorkspace({
                     const value = await saveScore({
                       title: scoreTitle,
                       abc,
+                      editor_metadata: editorMetadata,
                       project_id: request.project_id ?? null,
                       ...scoreAncestry(plan, score, reusedSource),
                     });
                     setScore(value);
                     setBaseline(value.abc);
+                    setMetadataBaseline(JSON.stringify(value.editor_metadata ?? null));
                     setNotice(`Saved new immutable score version ${value.id}`);
                     await refresh();
                   })
@@ -792,13 +832,6 @@ export default function ComposeWorkspace({
               </pre>
             </div>
           )}
-          <h3>Notation preview</h3>
-          <ScorePlayback
-            validation={currentValidation}
-            active={active}
-            abc={abc}
-          />
-          <ScorePreview abc={abc} />
         </section>
       </div>
     </>

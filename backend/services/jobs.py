@@ -15,7 +15,7 @@ import traceback
 from typing import Any, Callable
 from uuid import uuid4
 
-from backend.generation_models import GenerationJob, GenerationRequest, JobList, JobStage
+from backend.generation_models import GenerationJob, GenerationRequest, JobList, JobStage, JobProgress
 from backend.settings import Settings
 from backend.services.job_logging import capture_worker_stderr, redact_secrets
 from backend.services.provenance import collect_provenance
@@ -173,16 +173,19 @@ class JobManager:
                     raise
             self.queue.append(identifier)
             self.condition.notify()
-            return job.model_copy(deep=True)
+            return self.get(identifier)
 
     def snapshot(self) -> tuple[int, JobList]:
         with self.lock:
-            jobs = sorted((record.job.model_copy(deep=True) for record in self.records.values()), key=lambda job: job.created_at, reverse=True)
+            jobs = sorted((self.get(identifier) for identifier in self.records), key=lambda job: job.created_at, reverse=True)
             return self.revision, JobList(jobs=jobs)
 
     def get(self, identifier: str) -> GenerationJob:
         with self.lock:
-            return self.records[identifier].job.model_copy(deep=True)
+            job = self.records[identifier].job.model_copy(deep=True)
+            waiting = [key for key in self.queue if self.records[key].job.status == "queued"]
+            job.queue_position = waiting.index(identifier) + 1 if job.status == "queued" and identifier in waiting else None
+            return job
 
     def cancel(self, identifier: str) -> GenerationJob:
         with self.condition:
@@ -195,7 +198,7 @@ class JobManager:
                     record.job.finished_at = timestamp()
                 self._log(record, "Cancellation requested; active native stages stop at their next supported boundary.")
                 self._publish(record)
-            return record.job.model_copy(deep=True)
+            return self.get(identifier)
 
     def file(self, identifier: str, *, audio: bool) -> Path:
         with self.lock:
@@ -232,16 +235,42 @@ class JobManager:
     def _stage(self, record: JobRecord, stage: JobStage) -> None:
         with self.lock:
             record.job.stage = stage
+            record.job.stage_started_at = timestamp()
+            record.job.progress = None
+            record.job.progress_revision += 1
             self._log(record, f"Stage: {stage}")
             self._publish(record)
 
     def _token(self, record: JobRecord, phase: str, token: int) -> None:
         with self.lock:
             record.job.token_count += 1
+            label = "Planning score" if phase == "abc" else "Generating song"
+            progress = record.job.progress
+            count = progress.completed + 1 if progress and progress.label == label and progress.unit == "tokens" else 1
+            record.job.progress = JobProgress(label=label, completed=count, unit="tokens")
+            record.job.progress_revision += 1
             now = time.monotonic()
             if now - record.last_token_update >= 0.5:
                 record.last_token_update = now
                 self._publish(record)
+
+    def _progress(self, record: JobRecord, progress: JobProgress) -> None:
+        with self.lock:
+            if record.job.status != "running":
+                return
+            previous = record.job.progress
+            changed_activity = previous is None or previous.label != progress.label
+            if previous and not changed_activity and progress.completed < previous.completed:
+                return
+            record.job.progress = progress.model_copy(deep=True)
+            record.job.progress_revision += 1
+            now = time.monotonic()
+            if changed_activity or progress.finished or now - record.last_token_update >= 0.5:
+                record.last_token_update = now
+                try:
+                    self._publish(record)
+                except OSError:
+                    LOGGER.warning("Could not persist supplementary progress", exc_info=True)
 
     def _run(self) -> None:
         try:
@@ -274,7 +303,8 @@ class JobManager:
             request = record.job.request
             callbacks = dict(cancelled=record.cancelled.is_set,
                              on_token=lambda phase, token: self._token(record, phase, token),
-                             on_stage=lambda stage: self._stage(record, stage))
+                             on_stage=lambda stage: self._stage(record, stage),
+                             on_progress=lambda progress: self._progress(record, progress))
             if request.operation == "exact_plan":
                 self._log(record, "Reusing exact saved planning tokens and historical planning timing/truncation; semantic generation and rendering use current configured models.")
                 from backend.services.composition import inspect_plan

@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import importlib
+from contextlib import contextmanager
 import sys
 import threading
 from pathlib import Path
 from typing import Any, Callable
 
 from backend.settings import Settings
+from backend.services.generation_progress import ProgressCallback, ProgressObserver
 
 _import_lock = threading.Lock()
 _configured_source: Path | None = None
@@ -41,6 +43,19 @@ def pipeline_loader(repository: Path | None) -> Callable[..., Any]:
 
                 stage_callback: Callable[[str], None] | None = None
                 exact_plan: Any = None
+                progress_callback: ProgressCallback | None = None
+
+                @contextmanager
+                def _status(self, *args: Any, **kwargs: Any):
+                    # Delegate the original context, including exceptions and GPU boundaries.
+                    observer = None
+                    with super()._status(*args, **kwargs) as native:
+                        if self.progress_callback is not None and ProgressObserver.compatible(native):
+                            observer = ProgressObserver(native, self.progress_callback)
+                            observer.report()
+                        yield observer if observer is not None else native
+                    if observer is not None:
+                        observer.report(finished=True)
 
                 def report_stage(self, stage: str) -> None:
                     if self.stage_callback is not None:
@@ -104,7 +119,7 @@ class YuE2Service:
                 )
             return self._pipeline
 
-    def generate(self, *, on_stage: Callable[[str], None] | None = None, **request: Any) -> Any:
+    def generate(self, *, on_stage: Callable[[str], None] | None = None, on_progress: ProgressCallback | None = None, **request: Any) -> Any:
         with self._lock:
             pipeline = self.load()
             if self.expected_reproduction is not None:
@@ -115,13 +130,15 @@ class YuE2Service:
                     raise ValueError("Saved configuration or weights differ from the loaded pipeline. Use Reuse inputs for an intentional current-environment generation.")
             if on_stage is not None:
                 pipeline.stage_callback = on_stage
+            pipeline.progress_callback = on_progress
             try:
                 return pipeline(**request)
             finally:
+                pipeline.progress_callback = None
                 if on_stage is not None:
                     pipeline.stage_callback = None
 
-    def plan(self, *, on_stage: Callable[[str], None] | None = None, **request: Any) -> Any:
+    def plan(self, *, on_stage: Callable[[str], None] | None = None, on_progress: ProgressCallback | None = None, **request: Any) -> Any:
         """Call only the public planner, preserving its exact native output."""
         with self._lock:
             pipeline = self.load()
@@ -131,13 +148,15 @@ class YuE2Service:
                 if pipeline.effective_config(native_request) != self.expected_reproduction["config"] or pipeline.weights != self.expected_reproduction["weights"]:
                     raise ValueError("Saved configuration or weights differ from the loaded planner. Reuse inputs for an intentional current-environment plan.")
             pipeline.stage_callback = on_stage
+            pipeline.progress_callback = on_progress
             try:
                 plan = pipeline.plan(**request)
                 return PlannedResult(plan, pipeline.effective_config(plan.request), pipeline.weights)
             finally:
                 pipeline.stage_callback = None
+                pipeline.progress_callback = None
 
-    def generate_exact(self, directory: Path, *, on_stage: Callable[[str], None] | None = None, **callbacks: Any) -> Any:
+    def generate_exact(self, directory: Path, *, on_stage: Callable[[str], None] | None = None, on_progress: ProgressCallback | None = None, **callbacks: Any) -> Any:
         """One native __call__ with an exact saved public SymbolicPlan, never retokenized."""
         with self._lock:
             pipeline = self.load()
@@ -145,11 +164,13 @@ class YuE2Service:
             plan = native.SymbolicPlan.load(directory)
             pipeline.exact_plan = plan
             pipeline.stage_callback = on_stage
+            pipeline.progress_callback = on_progress
             try:
                 return pipeline(**plan.request.to_dict(), **callbacks)
             finally:
                 pipeline.exact_plan = None
                 pipeline.stage_callback = None
+                pipeline.progress_callback = None
 
     def close(self) -> None:
         with self._lock:

@@ -18,6 +18,13 @@ export interface GenerationRequest {
   seed: string;
   cfg_scale: number | null;
 }
+export interface JobProgress {
+  label: string;
+  completed: number;
+  total: number | null;
+  unit: "tokens" | "steps" | "chunks" | null;
+  finished: boolean;
+}
 export interface GenerationJob {
   id: string;
   title: string;
@@ -45,6 +52,10 @@ export interface GenerationJob {
   duration_seconds: number | null;
   truncated: boolean;
   token_count: number;
+  stage_started_at?: string | null;
+  progress?: JobProgress | null;
+  progress_revision?: number;
+  queue_position?: number | null;
   cancel_requested: boolean;
 }
 interface JobsResponse {
@@ -69,6 +80,7 @@ export function useGenerationJobs() {
   const [connection, setConnection] = useState(
     "Connecting to generation updates…",
   );
+  const [updatesLive, setUpdatesLive] = useState(false);
   useEffect(() => {
     let disposed = false;
     let streamHealthy = false;
@@ -102,16 +114,19 @@ export function useGenerationJobs() {
           throw new Error("Invalid job update");
         streamRevision += 1;
         streamHealthy = true;
+        setUpdatesLive(true);
         setJobs((previous) => mergeGenerationJobs(previous, response.jobs));
         setConnection("Live generation updates connected");
       } catch {
         streamHealthy = false;
+        setUpdatesLive(false);
         setConnection("Could not read a live update. Refreshing job status…");
         void refresh();
       }
     });
     source.onerror = () => {
       streamHealthy = false;
+      setUpdatesLive(false);
       void refresh();
     };
     const interval = window.setInterval(() => {
@@ -125,5 +140,5 @@ export function useGenerationJobs() {
   }, []);
   const rememberJob = (job: GenerationJob) =>
     setJobs((previous) => mergeGenerationJobs(previous, [job]));
-  return { jobs, connection, rememberJob };
+  return { jobs, connection, updatesLive, rememberJob };
 }

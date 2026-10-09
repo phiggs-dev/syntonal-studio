@@ -185,3 +185,19 @@ test("historical score reuse retains generation and version ancestry through sav
     source_generation_id: null,
   });
 });
+
+test("bar preview clips tied notes at both boundaries and isolates the selected voice", async () => {
+  const { previewRangeNotes } = await load("scoreTiming");
+  const report = { bpm: 120, voices: {
+    Vocal: { notes: [
+      { onset_quarters: "0", duration_quarters: "6", midi_pitch: 60 },
+      { onset_quarters: "7", duration_quarters: "4", midi_pitch: 62 },
+    ] },
+    Ins: { notes: [{ onset_quarters: "4", duration_quarters: "4", midi_pitch: 48 }] },
+  } };
+  assert.deepEqual(previewRangeNotes(report, { start: 4, end: 8, voice: "Vocal" }), [
+    { onset: 0, duration: 1, midi: 60 }, { onset: 1.5, duration: .5, midi: 62 },
+  ]);
+  assert.throws(() => previewRangeNotes(report, { start: 12, end: 16, voice: "Vocal" }), /rests/);
+  assert.throws(() => previewRangeNotes(report, { start: 8, end: 4, voice: "Vocal" }), /range/);
+});

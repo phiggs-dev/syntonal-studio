@@ -68,6 +68,8 @@ History supports text, project/unassigned, mode, seed, model, decoder, favorite 
 **Re-run saved configuration** queues a new recording using saved inference settings. It requires a clean matching recorded upstream commit, pinned available model/decoder snapshots and compatible native effective configuration/weight identity. Missing or incompatible provenance is an error, not permission to substitute current defaults. Older Phase 2 recordings without startup provenance remain playable, downloadable and reusable through the explicit current-settings route. Hardware/runtime differences can affect reproduction; bit-identical output is not guaranteed.
 
 The configured projects directory holds a versioned catalog with project metadata and references to known generation folders. Output-directory changes retain already cataloged history; changing the projects directory selects another library. Project export contains metadata/references, not a portable bundle of audio/model weights. No deletion or source-artifact editing is introduced in this phase.
+Generation progress appears above the recording history in Create and near the top of Compose. The active tracker shows workflow stages, elapsed time, and queue position; a header shortcut opens the active job from another page. Animated bars indicate stages with unknown totals. When supported by the configured YuE runtime, synthesis and decoding show reported step/chunk counts. These are stage counters, not an overall percentage or time estimate. Token counts are available under Progress details. Cancellation waits for a supported stopping boundary.
+
 ## Compose a score
 
 1. Open Compose, enter style and lyrics, select Full or Melody, and choose **Generate plan only**. The completed job retains a native symbolic plan without generating audio.
@@ -107,3 +109,45 @@ Setup does not initialize Git or commit changes.
 Syntonal Studio is licensed under the [Apache License, Version 2.0](LICENSE).
 
 Upstream code and model weights have separate licenses. Consult [upstream code license](https://github.com/multimodal-art-projection/YuE/blob/ef1936f2ee39fe8de486a0f47a481c95f8d4da87/LICENSE) and [inspected model-weight terms](https://github.com/multimodal-art-projection/YuE/blob/ef1936f2ee39fe8de486a0f47a481c95f8d4da87/MODEL_LICENSE). These do not automatically apply to external SheetSage/MERT models. Studio bundles no weights. Third-party dependencies and separately downloaded runtimes/models retain their own licenses.
+
+## Visual composition editing
+
+Compose displays numbered bars with beat divisions, proportional note/rest blocks,
+and chords at their musical positions. Switch between vocal and instrumental parts,
+zoom the timeline, or open the notation view.
+
+Choose **Piano Roll** for a vertical piano keyboard and pitch rows, with note
+position and width showing timing and duration. Timeline and Notation remain
+available, and all views edit the same draft and share Undo/Redo. Drag notes to
+move them in time/pitch, drag their right edges to resize, and use Snap to choose
+musical divisions. Double-click empty space to insert a note, or enable Draw notes
+for single-click insertion. The New note control sets its duration. Rests appear
+as empty space; tied segments appear as continuous notes. The keyboard stays
+visible while scrolling and provides short synthetic tone previews.
+
+Focus a note and use Up/Down to transpose, Left/Right to move by the snap value,
+Shift+Left/Right to resize, and Delete to turn it into silence. Pitch and duration
+controls remain available in the shared inspector. Insertions and moves stay
+within the selected section and reject overlaps. Ties crossing section boundaries
+can still be edited with the inspector; moving those ties requires Advanced.
+
+Select a note or rest to edit its pitch or duration, split it, or convert between a
+note and a rest. Shortening leaves silence; lengthening consumes available silence
+and creates tied continuations across barlines. Edits never move later notes to
+make room. Use the duration selector, drag the selected block's right edge, or focus
+the resize handle and press Left/Right for one source-resolution step. Tied notes
+are edited as a complete chain. Only affected bars are rewritten, with explicit
+pitch spelling to preserve neighboring pitches.
+
+Choose a lyric line under **Lyrics and phrase references** and link it to a bar
+range. These manual phrase references are saved with new score versions; they do
+not align individual syllables or control sung timing. Changing lyrics deactivates
+old links. Editing Advanced ABC clears links; Undo restores them. ABC export
+contains notation only, not Studio phrase metadata.
+
+**Preview bars** plays local synthetic tones for the chosen part and range after
+validation. **Undo/Redo** covers visual, phrase and Advanced edits within the
+current editor session. **Advanced · ABC source** remains available for unsupported
+notation. **Validate draft** uses the native helper; **Save new version** preserves
+the original score and stores optional phrase metadata separately. Rendering uses
+the saved ABC, never inferred lyric alignment.

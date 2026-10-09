@@ -9,6 +9,7 @@ import {
   type SystemReport,
 } from "./api";
 
+import { GenerationStatusChip } from "./GenerationProgress";
 import { CreateWorkspace, GenerationPlayer } from "./CreateWorkspace";
 import { ProjectsWorkspace } from "./ProjectsWorkspace";
 import { HistoryWorkspace } from "./HistoryWorkspace";
@@ -71,6 +72,20 @@ const message = (error: unknown) =>
 export default function App() {
   const [page, setPage] = useState<Page>("Create");
   const generation = useGenerationJobs();
+  const [focusedGeneration, setFocusedGeneration] = useState<string | null>(null);
+  useEffect(() => {
+    if (page !== "Create" || !focusedGeneration) return;
+    const frame = requestAnimationFrame(() => {
+      const target = document.getElementById(`create-generation-${focusedGeneration}`)
+        ?? document.getElementById(`create-generation-details-${focusedGeneration}`);
+      if (target) {
+        target.scrollIntoView({ block: "nearest" });
+        target.focus({ preventScroll: true });
+      }
+      setFocusedGeneration(null);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [page, focusedGeneration]);
   const [listeningJob, setListeningJob] = useState<GenerationJob | undefined>();
   const [listeningDecoder, setListeningDecoder] = useState<string | null>(null);
   function listen(job: GenerationJob, decoder?: string | null) {
@@ -244,7 +259,13 @@ export default function App() {
           <span>
             Workspace <span className="muted">/ {page}</span>
           </span>
-          <span className="connection">{connected}</span>
+          <div className="topbar-status">
+            <GenerationStatusChip jobs={generation.jobs} updatesLive={generation.updatesLive} onOpen={(job) => {
+              setPage("Create");
+              setFocusedGeneration(job.id);
+            }} />
+            <span className="connection">{connected}</span>
+          </div>
         </header>
         <main>
           <div className="page-heading">
@@ -294,6 +315,7 @@ export default function App() {
             <CreateWorkspace
               jobs={generation.jobs}
               connection={generation.connection}
+              updatesLive={generation.updatesLive}
               settingsDirty={dirty}
               rememberJob={generation.rememberJob}
               onListen={listen}
@@ -313,6 +335,7 @@ export default function App() {
                   openPlanId={openPlanId}
                   openPlanNonce={openPlanNonce}
                   active={page === "Compose"}
+                  updatesLive={generation.updatesLive}
                 />
               </Suspense>
             </div>

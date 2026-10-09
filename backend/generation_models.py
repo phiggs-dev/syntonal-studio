@@ -42,6 +42,15 @@ JobStatus = Literal["queued", "running", "complete", "failed", "cancelled"]
 JobStage = Literal["queued", "loading", "planning", "semantic", "synthesizing", "decoding", "saving", "complete", "failed", "cancelled"]
 
 
+class JobProgress(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    label: str
+    completed: int = Field(default=0, ge=0)
+    total: int | None = Field(default=None, ge=0)
+    unit: Literal["tokens", "steps", "chunks"] | None = None
+    finished: bool = False
+
+
 class GenerationJob(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     id: str
@@ -60,6 +69,10 @@ class GenerationJob(BaseModel):
     duration_seconds: float | None = None
     truncated: bool = False
     token_count: int = 0
+    stage_started_at: str | None = None
+    progress: JobProgress | None = None
+    progress_revision: int = Field(default=0, ge=0)
+    queue_position: int | None = Field(default=None, ge=1)
     cancel_requested: bool = False
 
 

@@ -1,15 +1,17 @@
 /** Web Audio oscillators preview validated notes locally without remote soundfonts. */
 import { useEffect, useRef, useState } from "react";
 import type { ValidationReport } from "./composition";
-import { previewNotes } from "./scoreTiming";
+import { previewRangeNotes } from "./scoreTiming";
 export function ScorePlayback({
   validation,
   active,
   abc,
+  range,
 }: {
   validation: ValidationReport | null;
   active: boolean;
   abc: string;
+  range?: { start: number; end: number; voice: "Vocal" | "Ins"; label: string };
 }) {
   const context = useRef<AudioContext | null>(null);
   const timer = useRef<number | undefined>(undefined);
@@ -26,13 +28,13 @@ export function ScorePlayback({
     stop();
     setError("");
     return stop;
-  }, [abc, active]);
+  }, [abc, active, range?.start, range?.end, range?.voice]);
   async function play() {
     stop();
     setError("");
     try {
       if (!validation?.valid) throw Error("Validate the current draft first.");
-      const notes = previewNotes(validation.report);
+      const notes = previewRangeNotes(validation.report, range);
       const audio = new AudioContext();
       context.current = audio;
       await audio.resume();
@@ -82,7 +84,7 @@ export function ScorePlayback({
           disabled={!validation?.valid || !active}
           onClick={() => void play()}
         >
-          Play synthetic score
+          {range ? `Preview ${range.label}` : "Play synthetic score"}
         </button>
         <button className="text-button" disabled={!playing} onClick={stop}>
           Stop score preview

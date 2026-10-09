@@ -129,7 +129,7 @@ def test_score_render_forwards_saved_text_and_preserves_lineage(tmp_path, monkey
     app = configured_app(tmp_path, CompositionService)
     with TestClient(app, base_url="http://127.0.0.1") as client:
         parent = plan_job(client)
-        score = client.post('/api/compose/scores', json={"abc": ABC, "source_generation_id": parent["id"]}).json()
+        score = client.post('/api/compose/scores', json={"abc": ABC, "source_generation_id": parent["id"], "editor_metadata": {"lyrics": "Words", "phrases": [{"section": 0, "line": 0, "text": "Words", "first_bar": 1, "last_bar": 1}]}}).json()
         payload = {"style": "piano", "lyrics": "Words", "cot": "melody", "seed": "123"}
         response = client.post(f'/api/compose/scores/{score["id"]}/render', json=payload)
         assert response.status_code == 202, response.text
@@ -137,7 +137,7 @@ def test_score_render_forwards_saved_text_and_preserves_lineage(tmp_path, monkey
         assert child["status"] == "complete"
         native = app.state.job_manager.service.requests[-1]
         assert native["abc"] == ABC and native["seed"] == 123
-        assert "score_version_id" not in native and "operation" not in native
+        assert "score_version_id" not in native and "operation" not in native and "editor_metadata" not in native
         assert child["request"]["score_version_id"] == score["id"]
         lineage = json.loads((Path(child["output_directory"]) / 'lineage.json').read_text())
         assert lineage["source_plan_id"] is None and lineage["parent_generation_id"] == parent["id"]
@@ -269,3 +269,30 @@ def test_saved_plan_configuration_drift_rejected_before_planning(monkeypatch):
     service.expected_reproduction = {'config': {'steps': 16}, 'weights': {'mot': 'saved'}}
     with pytest.raises(ValueError, match='Saved configuration or weights differ'):
         service.plan(style='x', lyrics='y')
+
+def test_score_phrase_metadata_roundtrip_and_legacy_versions(tmp_path):
+    from backend.composition_models import ScoreInput
+    with TestClient(configured_app(tmp_path, CompositionService), base_url="http://127.0.0.1") as client:
+        legacy = client.post('/api/compose/scores', json={"abc": ABC, "title": "Legacy"})
+        assert legacy.status_code == 201, legacy.text
+        assert legacy.json()["editor_metadata"] is None
+        metadata = {"lyrics": "[Verse]\nFirst line\n", "phrases": [
+            {"section": 0, "line": 0, "text": "First line", "first_bar": 1, "last_bar": 2}
+        ]}
+        saved = client.post('/api/compose/scores', json={"abc": ABC, "editor_metadata": metadata, "parent_score_id": legacy.json()["id"]})
+        assert saved.status_code == 201, saved.text
+        assert saved.json()["sha256"] == legacy.json()["sha256"]
+        assert saved.json()["id"] != legacy.json()["id"]
+        restored = client.get('/api/compose/scores/' + saved.json()["id"]).json()
+        assert restored["editor_metadata"] == metadata
+        assert client.get('/api/compose/scores/' + legacy.json()["id"]).json()["editor_metadata"] is None
+        # Existing on-disk metadata without the optional field remains readable.
+        metadata_path = tmp_path / "projects" / "scores" / legacy.json()["id"] / "score.json"
+        legacy_metadata = json.loads(metadata_path.read_text())
+        legacy_metadata.pop("editor_metadata")
+        metadata_path.write_text(json.dumps(legacy_metadata))
+        assert client.get('/api/compose/scores/' + legacy.json()["id"]).json()["editor_metadata"] is None
+        assert ScoreInput.model_validate({"abc": ABC}).editor_metadata is None
+        bad = {**metadata, "phrases": [{"section": 0, "line": 0, "text": "Line", "first_bar": 3, "last_bar": 1}]}
+        assert client.post('/api/compose/scores', json={"abc": ABC, "editor_metadata": bad}).status_code == 422
+        assert client.post('/api/compose/scores', json={"abc": ABC, "editor_metadata": {**metadata, "unexpected": True}}).status_code == 422

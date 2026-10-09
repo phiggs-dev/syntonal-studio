@@ -24,7 +24,9 @@ export function mergeGenerationJob(
 ): GenerationJob {
   // A terminal receipt is final; a delayed acknowledgement must never hide its result.
   const preserveExisting = isTerminal(existing) ||
-    (!isTerminal(incoming) && stageOrder[existing.stage] > stageOrder[incoming.stage]);
+    (!isTerminal(incoming) && (stageOrder[existing.stage] > stageOrder[incoming.stage] ||
+      (stageOrder[existing.stage] === stageOrder[incoming.stage] &&
+       (existing.progress_revision ?? 0) > (incoming.progress_revision ?? 0))));
   const latest = preserveExisting ? existing : incoming;
   return {
     ...latest,

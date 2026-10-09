@@ -1,5 +1,5 @@
 /** Original style/lyrics are submitted unchanged; CFG means classifier-free guidance. */
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useId, useState, type FormEvent } from "react";
 import {
   cancelGeneration,
   errorMessage,
@@ -9,6 +9,8 @@ import {
 } from "./generation";
 
 import type { Project, ReuseDraft } from "./library";
+import { GenerationProgress } from "./GenerationProgress";
+import { generationStageLabels as stageLabels, isActiveGeneration, primaryGeneration, prioritizeGenerationJobs } from "./generationProgressModel";
 
 const modes: { value: ConditioningMode; title: string; detail: string }[] = [
   {
@@ -27,18 +29,6 @@ const modes: { value: ConditioningMode; title: string; detail: string }[] = [
     detail: "Generate directly from style and lyrics, without a symbolic plan.",
   },
 ];
-const stageLabels: Record<GenerationJob["stage"], string> = {
-  queued: "Queued",
-  loading: "Loading models",
-  planning: "Planning the song",
-  semantic: "Generating semantic tokens",
-  synthesizing: "Synthesizing audio",
-  decoding: "Decoding audio",
-  saving: "Saving original artifacts",
-  complete: "Complete",
-  failed: "Failed",
-  cancelled: "Cancelled",
-};
 function randomSeed(): string {
   const words = crypto.getRandomValues(new Uint32Array(2));
   return ((BigInt(words[0] & 0x7fffffff) << 32n) | BigInt(words[1])).toString();
@@ -46,6 +36,7 @@ function randomSeed(): string {
 interface CreateWorkspaceProps {
   jobs: GenerationJob[];
   connection: string;
+  updatesLive?: boolean;
   settingsDirty: boolean;
   rememberJob: (job: GenerationJob) => void;
   onListen: (job: GenerationJob) => void;
@@ -55,12 +46,14 @@ interface CreateWorkspaceProps {
 export function CreateWorkspace({
   jobs,
   connection,
+  updatesLive = true,
   settingsDirty,
   rememberJob,
   onListen,
   projects,
   draft,
 }: CreateWorkspaceProps) {
+  const generationFormId = useId();
   const [projectId, setProjectId] = useState("");
   const [parentId, setParentId] = useState<string | null>(null);
   const [pendingDraft, setPendingDraft] = useState<ReuseDraft | null>(null);
@@ -97,6 +90,8 @@ export function CreateWorkspace({
   const activeJobs = jobs.filter(
     (job) => job.status === "running" || job.status === "queued",
   ).length;
+  const currentJob = primaryGeneration(jobs);
+  const orderedJobs = prioritizeGenerationJobs(jobs);
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError("");
@@ -153,6 +148,7 @@ export function CreateWorkspace({
   return (
     <div className="create-grid">
       <form
+        id={generationFormId}
         className="panel composition-panel"
         onSubmit={(event) => void submit(event)}
       >
@@ -346,6 +342,29 @@ export function CreateWorkspace({
             configuration.
           </p>
         )}
+        <p className="field-help">
+          Original audio and generation artifacts are saved to your configured
+          output folder.
+        </p>
+      </form>
+      <section className="panel jobs-panel" aria-label="Generation jobs">
+        <div className="section-heading generations-heading">
+          <div>
+            <h2>Generations</h2>
+            <span className="queue-count">{activeJobs} active / queued</span>
+          </div>
+          <button
+            type="submit"
+            form={generationFormId}
+            className="primary-button"
+            disabled={submitting}
+          >
+            {submitting ? "Submitting…" : "Generate song ↗"}
+          </button>
+        </div>
+        <p className="field-help" role="status">
+          {connection}
+        </p>
         {error && (
           <div role="alert" className="notice error">
             {error}
@@ -356,24 +375,15 @@ export function CreateWorkspace({
             {receipt}
           </div>
         )}
-        <div className="generation-submit">
-          <p>
-            Original audio and generation artifacts are saved to your configured
-            output folder.
-          </p>
-          <button className="primary-button" disabled={submitting}>
-            {submitting ? "Submitting…" : "Generate song ↗"}
-          </button>
-        </div>
-      </form>
-      <section className="panel jobs-panel" aria-label="Generation jobs">
-        <div className="section-heading">
-          <h2>Generations</h2>
-          <span className="queue-count">{activeJobs} active / queued</span>
-        </div>
-        <p className="field-help" role="status">
-          {connection}
-        </p>
+        {currentJob && <div className="active-generation" id={`create-generation-${currentJob.id}`} tabIndex={-1}>
+          <h3>{currentJob.title || "Untitled recording"}</h3>
+          <GenerationProgress job={currentJob} updatesLive={updatesLive} />
+          <button type="button" className="text-button"
+            disabled={currentJob.cancel_requested || cancelling.includes(currentJob.id)}
+            onClick={() => void cancel(currentJob.id)}
+          >{currentJob.cancel_requested ? "Stopping…" : "Cancel"}</button>
+        </div>}
+        <div className="generation-job-list" aria-label="Generation history" tabIndex={0}>
         {!jobs.length && (
           <div className="empty-jobs">
             <span aria-hidden="true">♫</span>
@@ -383,8 +393,9 @@ export function CreateWorkspace({
             </p>
           </div>
         )}
-        {jobs.map((job) => (
-          <article className="job-card" key={job.id}>
+        {orderedJobs.map((job) => {
+          const card = <article className="job-card" key={job.id} id={`create-generation-details-${job.id}`} tabIndex={-1}>
+
             <div className="job-heading">
               <h3>{job.title || "Untitled recording"}</h3>
               <span className={`job-status status-${job.status}`}>
@@ -395,13 +406,8 @@ export function CreateWorkspace({
               {new Date(job.created_at).toLocaleString()} · {job.request.cot} ·
               Seed {job.request.seed}
             </p>
-            {job.status === "running" && (
-              <p className="job-progress" role="status">
-                {job.token_count.toLocaleString()} tokens reported
-                {job.cancel_requested
-                  ? " · Cancellation requested; waiting for a safe stopping point."
-                  : " · Working on your recording…"}
-              </p>
+            {isActiveGeneration(job) && job.id !== currentJob?.id && (
+              <GenerationProgress job={job} updatesLive={updatesLive} />
             )}
             {job.error && <div className="notice error">{job.error}</div>}
             {job.truncated && (
@@ -468,8 +474,14 @@ export function CreateWorkspace({
                 Open generation log ↗
               </a>
             </details>
-          </article>
-        ))}
+          </article>;
+          return job.id === currentJob?.id
+            ? <details className="current-generation-details" key={job.id}>
+                <summary>Current job details &amp; original inputs</summary>{card}
+              </details>
+            : card;
+        })}
+        </div>
       </section>
     </div>
   );
@@ -485,20 +497,31 @@ export function GenerationPlayer({
 }) {
   const [loop, setLoop] = useState(false);
   const [failedAudioUrl, setFailedAudioUrl] = useState<string | null>(null);
+  const [detailsCollapsed, setDetailsCollapsed] = useState(true);
+  const playerDetailsId = useId();
+  const playerActionsId = useId();
+  const isCollapsed = Boolean(job?.audio_url) && detailsCollapsed;
   return (
-    <section className="persistent-player" aria-label="Audio player">
+    <section
+      className={`persistent-player${isCollapsed ? " player-collapsed" : ""}`}
+      aria-label="Audio player"
+    >
       <div className="player-description">
-        <span className="eyebrow">NOW LISTENING</span>
+        <span className="eyebrow" hidden={isCollapsed}>
+          NOW LISTENING
+        </span>
         <strong>
           {job ? job.title || "Untitled recording" : "Your next recording"}
         </strong>
-        <span className="player-metadata">
-          {job
-            ? `${job.sample_rate ?? "—"} Hz · ${job.channels ?? "—"} channels · ${job.duration_seconds?.toFixed(1) ?? "—"} s`
-            : "Choose Listen on a completed generation."}
-        </span>
-        {decoder && <small>Decoder: {decoder}</small>}
-        {job && <small className="player-id">{job.id}</small>}
+        <div className="player-details" id={playerDetailsId} hidden={isCollapsed}>
+          <span className="player-metadata">
+            {job
+              ? `${job.sample_rate ?? "—"} Hz · ${job.channels ?? "—"} channels · ${job.duration_seconds?.toFixed(1) ?? "—"} s`
+              : "Choose Listen on a completed generation."}
+          </span>
+          {decoder && <small>Decoder: {decoder}</small>}
+          {job && <small className="player-id">{job.id}</small>}
+        </div>
       </div>
       {job?.audio_url ? (
         <div className="player-controls">
@@ -511,7 +534,7 @@ export function GenerationPlayer({
             onPlaying={() => setFailedAudioUrl(null)}
             aria-label={`Play ${job.title || job.id}`}
           />
-          <div className="player-actions">
+          <div className="player-actions" id={playerActionsId} hidden={isCollapsed}>
             <label>
               <input
                 type="checkbox"
@@ -538,6 +561,32 @@ export function GenerationPlayer({
         </div>
       ) : (
         <span className="muted">No audio selected</span>
+      )}
+      {job?.audio_url && (
+        <button
+          type="button"
+          className="player-toggle"
+          aria-expanded={!isCollapsed}
+          aria-controls={`${playerDetailsId} ${playerActionsId}`}
+          aria-label={
+            isCollapsed ? "Expand player details" : "Collapse player details"
+          }
+          title={
+            isCollapsed ? "Expand player details" : "Collapse player details"
+          }
+          onClick={() => setDetailsCollapsed((collapsed) => !collapsed)}
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              d={isCollapsed ? "m6 15 6-6 6 6" : "m6 9 6 6 6-6"}
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </button>
       )}
     </section>
   );

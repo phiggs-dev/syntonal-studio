@@ -1,5 +1,6 @@
 /** Composition APIs preserve score text and keep exact token reuse separate from edited conditioning. */
 import { apiRequest } from "./api";
+import type { EditorMetadata } from "./visualScore";
 import type { GenerationJob, GenerationRequest } from "./generation";
 export interface PlanSummary {
   id: string;
@@ -27,6 +28,7 @@ export interface ScoreVersion {
   parent_score_id: string | null;
   source_generation_id: string | null;
   sha256: string;
+  editor_metadata?: EditorMetadata | null;
 }
 export interface ValidationReport {
   valid: boolean;
@@ -44,7 +46,7 @@ export interface ComparisonReport {
 }
 export type ScoreInput = Pick<
   ScoreVersion,
-  "title" | "abc" | "project_id" | "parent_score_id" | "source_generation_id"
+  "title" | "abc" | "project_id" | "parent_score_id" | "source_generation_id" | "editor_metadata"
 >;
 export const composePost = <T>(path: string, body: unknown) =>
   apiRequest<T>(`/api/compose/${path}`, {

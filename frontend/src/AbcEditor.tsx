@@ -20,9 +20,13 @@ const abcLanguage = StreamLanguage.define({
 export function AbcEditor({
   value,
   onChange,
+  onUndo,
+  onRedo,
 }: {
   value: string;
   onChange: (value: string) => void;
+  onUndo?: () => void;
+  onRedo?: () => void;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const editor = useRef<EditorView | null>(null);
@@ -71,7 +75,8 @@ export function AbcEditor({
           type="button"
           className="text-button"
           onClick={() => {
-            if (editor.current) undo(editor.current);
+            if (onUndo) onUndo();
+            else if (editor.current) undo(editor.current);
           }}
         >
           Undo
@@ -80,7 +85,8 @@ export function AbcEditor({
           type="button"
           className="text-button"
           onClick={() => {
-            if (editor.current) redo(editor.current);
+            if (onRedo) onRedo();
+            else if (editor.current) redo(editor.current);
           }}
         >
           Redo

@@ -50,3 +50,12 @@ test("older snapshots preserve newly submitted jobs and keep newest-first orderi
   assert.deepEqual(merged, [newer, queued]);
   assert.deepEqual(mergeGenerationJobs([queued], [newer]), [newer, queued]);
 });
+
+test("delayed same-stage snapshots cannot roll back measured work or loading subactivities", () => {
+  const older = {...queued,status:"running",stage:"synthesizing",progress_revision:10,progress:{label:"Synthesizing audio",completed:8,total:96,unit:"steps",finished:false}};
+  const newer = {...older,progress_revision:20,progress:{...older.progress,completed:48}};
+  assert.deepEqual(mergeGenerationJob(newer,older),newer);
+  const decoderLoading = {...newer,stage:"decoding",progress_revision:21,progress:{label:"Loading audio decoder",completed:0,total:null,unit:null,finished:false}};
+  assert.deepEqual(mergeGenerationJob(newer,decoderLoading),decoderLoading);
+  assert.deepEqual(mergeGenerationJob(decoderLoading,newer),decoderLoading);
+});
