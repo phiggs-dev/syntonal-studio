@@ -79,7 +79,7 @@ Generation progress appears above the recording history in Create and near the t
 5. **Save new version** always writes another immutable score, retaining its source links. Unsupported drafts can be saved; rendering a saved score requires supported validation. Choose **Render saved score** to use its exact text with the current style, lyrics, seed, mode and configured models.
 6. To keep a native plan unchanged, use **Render original plan exactly** instead. This preserves its original request and token identity, ignoring editor changes. Current model/decoder settings are used, and identical audio is not guaranteed. The new recording has its own Studio job ID and output directory.
 
-Score versions live under `projects_directory/scores/<version-id>/`; native plan bundles remain in their generation artifacts. Drafts survive workspace navigation but must be saved or exported before closing/reloading the browser. Playback and rendering are separate actions. No original recording or serialized plan is overwritten.
+Score versions live under `projects_directory/scores/<version-id>/`; native plan bundles remain in their generation artifacts. Create and Compose drafts are automatically saved in this browser. After reloading or reopening, choose **Restore draft** or **Start fresh**; saved score versions remain separate. Playback and rendering are separate actions. No original recording or serialized plan is overwritten.
 
 
 ## Future workspaces
@@ -114,7 +114,10 @@ Upstream code and model weights have separate licenses. Consult [upstream code l
 
 Compose displays numbered bars with beat divisions, proportional note/rest blocks,
 and chords at their musical positions. Switch between vocal and instrumental parts,
-zoom the timeline, or open the notation view.
+zoom the timeline, or open the notation view. Use **Expand workspace** beside the
+Score workspace heading to hide the left panel and give the composer more room.
+Choose **Restore columns** to bring the inputs back; your draft and editor state
+are retained.
 
 Choose **Piano Roll** for a vertical piano keyboard and pitch rows, with note
 position and width showing timing and duration. Timeline and Notation remain
@@ -151,3 +154,52 @@ current editor session. **Advanced · ABC source** remains available for unsuppo
 notation. **Validate draft** uses the native helper; **Save new version** preserves
 the original score and stores optional phrase metadata separately. Rendering uses
 the saved ABC, never inferred lyric alignment.
+
+
+### Draft recovery and lyrics entry
+
+Create and Compose each keep browser-local recovery snapshots of their inputs.
+Compose also retains unsaved ABC and phrase references. Separate tabs keep
+separate snapshots, and saved
+library settings determine which drafts are offered. Restoring a draft never
+starts a generation. Missing project or source references are reported and
+removed from the recovered working copy while its text remains available.
+
+Use **Insert section** to add a heading at the cursor and **Go to section** to
+navigate repeated verses or choruses. Lyrics have their own Undo/Redo controls.
+**Import .txt** accepts UTF-8 text and asks before replacing existing lyrics;
+**Export .txt** preserves the current text. These controls do not align syllables
+to notes or change model behavior.
+
+Recovery belongs to this browser and this server address, including its port.
+It is not a backup or a saved project version: clearing browser data removes it,
+and another browser cannot access it. Older snapshots remain available until
+explicitly discarded. If storage is unavailable or full, a warning and retry
+control appear; save or export your work before leaving. Undo history starts
+fresh after recovery. Use **Save new version** to preserve a score permanently.
+
+
+### Lyrics lane and phrase navigation
+
+Timeline and Piano Roll show a **Lyrics lane** beneath the notes. Linked lyric
+lines span their assigned bars; unlinked lines remain visible without guessed
+placement. Click a line to highlight its range, or select a note/bar to highlight
+the associated lyric line. Horizontal scrolling stays synchronized between the
+notes and lyrics.
+
+Select a line, choose **From bar** and **Through bar**, and click **Link line to
+bars**. You can move its range or **Unlink line** without deleting the lyrics.
+Edit a selected line directly with **Save lyric edit**; blank lines, surrounding
+spacing and line endings are preserved. The composition editor's **Undo/Redo**
+restores lyric edits and phrase links together. Use the main lyrics editor to add
+lines or section headings.
+
+**Save new version** and browser recovery retain phrase metadata separately from
+ABC. Changes in the main lyrics editor make older phrase links inactive; relinking
+asks before replacing them. Advanced ABC edits clear phrase links and Undo can
+restore them. Repeated sections retain their own lyric occurrences.
+
+Syllable editing and syllable labels have been removed from the active UI.
+Previously saved syllable metadata remains preserved. Phrase references are
+composition and navigation aids: they are not measured vocal timing and do not
+instruct YuE when to sing particular words. ABC export contains notation only.

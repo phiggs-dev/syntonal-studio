@@ -36,7 +36,10 @@ export interface ScoreTimeline {
   errors: string[];
 }
 export interface LyricPhrase { section: number; line: number; text: string; first_bar: number; last_bar: number }
-export interface EditorMetadata { lyrics: string; phrases: LyricPhrase[] }
+export interface SyllableAssignment { text: string; first_note: number | null; last_note: number | null }
+export interface AlignmentLine { section: number; line: number; text: string; syllables: SyllableAssignment[] }
+export interface LyricAlignment { abc: string; lyrics: string; lines: AlignmentLine[] }
+export interface EditorMetadata { lyrics: string; phrases: LyricPhrase[]; alignment?: LyricAlignment | null; working_lyrics?: string | null }
 const supportedDurations = [48, 32, 24, 16, 12, 8, 6, 4, 3, 2, 1];
 const majorKeys = ["Cb", "Gb", "Db", "Ab", "Eb", "Bb", "F", "C", "G", "D", "A", "E", "B", "F#", "C#"];
 const minorKeys = ["Abm", "Ebm", "Bbm", "Fm", "Cm", "Gm", "Dm", "Am", "Em", "Bm", "F#m", "C#m", "G#m", "D#m", "A#m"];

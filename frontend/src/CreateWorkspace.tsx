@@ -8,7 +8,11 @@ import {
   type GenerationJob,
 } from "./generation";
 
-import type { Project, ReuseDraft } from "./library";
+import { getProjects, reuseGeneration, type Project, type ReuseDraft } from "./library";
+import { LyricsEditor } from "./LyricsEditor";
+import { DraftRecovery } from "./DraftRecovery";
+import { useRecoverableDraft } from "./useRecoverableDraft";
+import { isInputDraft, inputDraftHasContent, type InputDraft } from "./draftStorage";
 import { GenerationProgress } from "./GenerationProgress";
 import { generationStageLabels as stageLabels, isActiveGeneration, primaryGeneration, prioritizeGenerationJobs } from "./generationProgressModel";
 
@@ -34,6 +38,7 @@ function randomSeed(): string {
   return ((BigInt(words[0] & 0x7fffffff) << 32n) | BigInt(words[1])).toString();
 }
 interface CreateWorkspaceProps {
+  draftScope: string | null;
   jobs: GenerationJob[];
   connection: string;
   updatesLive?: boolean;
@@ -44,6 +49,7 @@ interface CreateWorkspaceProps {
   draft: ReuseDraft | null;
 }
 export function CreateWorkspace({
+  draftScope,
   jobs,
   connection,
   updatesLive = true,
@@ -87,6 +93,25 @@ export function CreateWorkspace({
   const [error, setError] = useState("");
   const [receipt, setReceipt] = useState("");
   const [cancelling, setCancelling] = useState<string[]>([]);
+  const recovery = useRecoverableDraft<InputDraft>({
+    scope: draftScope, workspace: "create", validate: isInputDraft, hasContent: inputDraftHasContent,
+    data: { title, style, lyrics, mode, seed, guidance, projectId, parentId },
+    onRestore: async value => {
+      const notices: string[] = [];
+      const [projectResult, parentResult] = await Promise.allSettled([
+        value.projectId ? getProjects() : Promise.resolve(null),
+        value.parentId ? reuseGeneration(value.parentId) : Promise.resolve(null),
+      ]);
+      const projectValid = !value.projectId || projectResult.status === "fulfilled" && projectResult.value?.projects.some(project => project.id === value.projectId);
+      const parentValid = !value.parentId || parentResult.status === "fulfilled";
+      if (!projectValid) notices.push("The old project could not be verified; this draft is unassigned.");
+      if (!parentValid) notices.push("The source recording could not be verified; its lineage link was removed.");
+      setTitle(value.title); setStyle(value.style); setLyrics(value.lyrics); setMode(value.mode);
+      setSeed(value.seed); setGuidance(value.guidance); setProjectId(projectValid ? value.projectId : "");
+      setParentId(parentValid ? value.parentId : null); setError("");
+      setReceipt(["Draft restored. Review before generating; no job was queued.", ...notices].join(" "));
+    },
+  });
   const activeJobs = jobs.filter(
     (job) => job.status === "running" || job.status === "queued",
   ).length;
@@ -94,6 +119,7 @@ export function CreateWorkspace({
   const orderedJobs = prioritizeGenerationJobs(jobs);
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!recovery.ready || recovery.restoring || submitting) return;
     setError("");
     setReceipt("");
     if (!/^\d+$/.test(seed) || BigInt(seed) > 9223372036854775807n) {
@@ -146,9 +172,12 @@ export function CreateWorkspace({
     }
   }
   return (
+    <>
+    <DraftRecovery recovery={recovery} disabled={submitting} />
     <div className="create-grid">
       <form
         id={generationFormId}
+        inert={!recovery.ready || recovery.restoring}
         className="panel composition-panel"
         onSubmit={(event) => void submit(event)}
       >
@@ -239,26 +268,7 @@ export function CreateWorkspace({
             own words.
           </p>
         </div>
-        <div className="field">
-          <label htmlFor="song-lyrics">Lyrics</label>
-          <textarea
-            id="song-lyrics"
-            className="lyrics-input"
-            value={lyrics}
-            onChange={(event) => setLyrics(event.target.value)}
-            rows={11}
-            required
-            spellCheck={false}
-            placeholder={
-              "[Verse]\nYour story starts here…\n\n[Chorus]\nThe words you want to sing"
-            }
-          />
-          <p className="field-help">
-            {lyrics.length} characters ·{" "}
-            {lyrics ? lyrics.split("\n").length : 0} lines · Formatting is
-            preserved.
-          </p>
-        </div>
+        <LyricsEditor id="song-lyrics" value={lyrics} onChange={setLyrics} rows={11} required />
         <fieldset className="mode-fieldset">
           <legend>Symbolic conditioning (COT)</legend>
           <div className="mode-options">
@@ -357,7 +367,7 @@ export function CreateWorkspace({
             type="submit"
             form={generationFormId}
             className="primary-button"
-            disabled={submitting}
+            disabled={submitting || !recovery.ready || recovery.restoring}
           >
             {submitting ? "Submitting…" : "Generate song ↗"}
           </button>
@@ -484,6 +494,7 @@ export function CreateWorkspace({
         </div>
       </section>
     </div>
+    </>
   );
 }
 

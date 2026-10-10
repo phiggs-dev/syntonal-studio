@@ -124,6 +124,7 @@ export default function App() {
   }, [libraryRevision]);
   const [connected, setConnected] = useState("Checking backend");
   const [settings, setSettings] = useState<Settings | null>(null);
+  const [draftScope, setDraftScope] = useState<string | null>(null);
   const [settingsLoading, setSettingsLoading] = useState(true);
   const [settingsError, setSettingsError] = useState("");
   const [saved, setSaved] = useState("");
@@ -137,7 +138,9 @@ export default function App() {
     setSettingsLoading(true);
     setSettingsError("");
     try {
-      setSettings(await getSettings());
+      const loaded = await getSettings();
+      setSettings(loaded);
+      setDraftScope(loaded.projects_directory);
       setDirty(false);
     } catch (error) {
       setSettingsError(message(error));
@@ -178,7 +181,9 @@ export default function App() {
     setSettingsError("");
     setSaved("");
     try {
-      setSettings(await saveSettings(settings));
+      const updated = await saveSettings(settings);
+      setSettings(updated);
+      setDraftScope(updated.projects_directory);
       setDirty(false);
       setLibraryRevision((value) => value + 1);
       setSaved("Settings saved. Refresh System to check this configuration.");
@@ -313,6 +318,8 @@ export default function App() {
           )}
           <div hidden={page !== "Create"}>
             <CreateWorkspace
+              key={draftScope ?? "loading"}
+              draftScope={draftScope}
               jobs={generation.jobs}
               connection={generation.connection}
               updatesLive={generation.updatesLive}
@@ -327,6 +334,8 @@ export default function App() {
             <div hidden={page !== "Compose"}>
               <Suspense fallback={<p>Loading composition tools…</p>}>
                 <ComposeWorkspace
+                  key={draftScope ?? "loading"}
+                  draftScope={draftScope}
                   projects={projects}
                   jobs={generation.jobs}
                   rememberJob={generation.rememberJob}

@@ -129,7 +129,7 @@ def test_score_render_forwards_saved_text_and_preserves_lineage(tmp_path, monkey
     app = configured_app(tmp_path, CompositionService)
     with TestClient(app, base_url="http://127.0.0.1") as client:
         parent = plan_job(client)
-        score = client.post('/api/compose/scores', json={"abc": ABC, "source_generation_id": parent["id"], "editor_metadata": {"lyrics": "Words", "phrases": [{"section": 0, "line": 0, "text": "Words", "first_bar": 1, "last_bar": 1}]}}).json()
+        score = client.post('/api/compose/scores', json={"abc": ABC, "source_generation_id": parent["id"], "editor_metadata": {"lyrics": "Words", "phrases": [{"section": 0, "line": 0, "text": "Words", "first_bar": 1, "last_bar": 1}], "alignment": {"abc": ABC, "lyrics": "Words", "lines": [{"section": 0, "line": 0, "text": "Words", "syllables": [{"text": "Words", "first_note": 0, "last_note": 0}]}]}}}).json()
         payload = {"style": "piano", "lyrics": "Words", "cot": "melody", "seed": "123"}
         response = client.post(f'/api/compose/scores/{score["id"]}/render', json=payload)
         assert response.status_code == 202, response.text
@@ -296,3 +296,30 @@ def test_score_phrase_metadata_roundtrip_and_legacy_versions(tmp_path):
         bad = {**metadata, "phrases": [{"section": 0, "line": 0, "text": "Line", "first_bar": 3, "last_bar": 1}]}
         assert client.post('/api/compose/scores', json={"abc": ABC, "editor_metadata": bad}).status_code == 422
         assert client.post('/api/compose/scores', json={"abc": ABC, "editor_metadata": {**metadata, "unexpected": True}}).status_code == 422
+
+
+def test_manual_syllable_alignment_is_versioned_sidecar_and_preserves_stale_snapshots(tmp_path):
+    import copy
+    metadata = {"lyrics": "[Verse]\nGolden hour", "phrases": [], "alignment": {
+        "abc": ABC, "lyrics": "[Verse]\nGolden hour", "lines": [{
+            "section": 0, "line": 0, "text": "Golden hour", "syllables": [
+                {"text": "Gold", "first_note": 0, "last_note": 1},
+                {"text": "en", "first_note": None, "last_note": None}]}]}}
+    with TestClient(configured_app(tmp_path, CompositionService), base_url="http://127.0.0.1") as client:
+        original = client.post('/api/compose/scores', json={"abc": ABC}).json()
+        saved = client.post('/api/compose/scores', json={"abc": ABC, "parent_score_id": original["id"], "editor_metadata": metadata})
+        assert saved.status_code == 201, saved.text
+        assert saved.json()["sha256"] == original["sha256"]
+        assert client.get('/api/compose/scores/' + saved.json()["id"]).json()["editor_metadata"] == metadata
+        assert client.get('/api/compose/scores/' + original["id"]).json()["editor_metadata"] is None
+        stale_metadata = {**metadata, "working_lyrics": "[Verse]\nChanged words"}
+        stale = client.post('/api/compose/scores', json={"abc": ABC + "\n", "editor_metadata": stale_metadata})
+        assert stale.status_code == 201
+        assert stale.json()["editor_metadata"] == stale_metadata
+        for first, last in [(1, 0), (0, None), (-1, 0), (0, 100001), (True, 1)]:
+            bad = copy.deepcopy(metadata)
+            bad["alignment"]["lines"][0]["syllables"][0].update(first_note=first, last_note=last)
+            assert client.post('/api/compose/scores', json={"abc": ABC, "editor_metadata": bad}).status_code == 422
+        bad = copy.deepcopy(metadata)
+        bad["alignment"]["lines"].append(bad["alignment"]["lines"][0])
+        assert client.post('/api/compose/scores', json={"abc": ABC, "editor_metadata": bad}).status_code == 422

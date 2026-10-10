@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { pianoRollNotes, snapPianoPosition, type PianoNote } from "./pianoRollModel";
-import { durationLabel, pitchLabel, type LyricPhrase, type ScoreTimeline, type TimelineBar, type TimelineEvent } from "./visualScore";
+import { durationLabel, pitchLabel, type ScoreTimeline, type TimelineBar, type TimelineEvent } from "./visualScore";
 
 interface Props {
   score: ScoreTimeline;
   bars: TimelineBar[];
   zoom: number;
   selectedChain?: string;
-  phrases: LyricPhrase[];
+  highlighted: { first: number; last: number } | null;
+  onBarSelect: (bar: number) => void;
   active: boolean;
   onSelect: (bar: TimelineBar, event: TimelineEvent) => void;
   onResize: (bar: TimelineBar, event: TimelineEvent, duration: number) => void;
@@ -34,7 +35,7 @@ const keyboardWidth = 72;
 const blackKeys = new Set([1, 3, 6, 8, 10]);
 const pitches = Array.from({ length: 128 }, (_, index) => 127 - index);
 
-export function PianoRoll({ score, bars, zoom, selectedChain, phrases, active,
+export function PianoRoll({ score, bars, zoom, selectedChain, highlighted, onBarSelect, active,
   onSelect, onResize, onMove, onInsert, onDelete, onChord }: Props) {
   const notes = useMemo(() => pianoRollNotes(score, bars), [score, bars]);
   const viewport = useRef<HTMLDivElement>(null);
@@ -193,9 +194,8 @@ export function PianoRoll({ score, bars, zoom, selectedChain, phrases, active,
         <div className="piano-roll-header">
           <div className="piano-key-corner">Pitch</div>
           <div className="piano-ruler" style={{ width, marginLeft: keyboardWidth }}>
-            {bars.map(bar => <div className="piano-ruler-bar" key={bar.id} style={{ left: (bar.absolute - origin) * pixelsPerUnit, width: bar.length * pixelsPerUnit }}>
-              <span className="piano-bar-title">Bar {bar.number} · {bar.meter.join("/")}</span>
-              <span className="piano-phrase-title">{phrases.filter(item => item.first_bar <= bar.number && item.last_bar >= bar.number).map(item => item.text).join(" / ")}</span>
+            {bars.map(bar => <div className={`piano-ruler-bar ${highlighted && bar.number >= highlighted.first && bar.number <= highlighted.last ? "piano-bar-highlighted" : ""}`} key={bar.id} style={{ left: (bar.absolute - origin) * pixelsPerUnit, width: bar.length * pixelsPerUnit }}>
+              <button type="button" className="piano-bar-title text-button" aria-label={`Select bar ${bar.number}`} onClick={() => onBarSelect(bar.number)}>Bar {bar.number} · {bar.meter.join("/")}</button>
               {(score.bars.Vocal.find(item => item.number === bar.number)?.annotations ?? []).map((annotation, index) => annotation.kind === "chord" ?
                 <button type="button" key={index} className="piano-chord" style={{ left: annotation.onset * pixelsPerUnit }} disabled={disabled}
                   onClick={() => onChord(score.bars.Vocal.find(item => item.number === bar.number)!, index)}>{annotation.value}</button> : null)}

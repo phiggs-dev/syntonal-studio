@@ -1,3 +1,4 @@
+import { metadataForScoreSave } from "./lyricAlignment";
 /** Compose stores immutable ABC versions; exact reuse keeps the native plan request and tokens. */
 import { useEffect, useRef, useState } from "react";
 import { GenerationProgress } from "./GenerationProgress";
@@ -11,7 +12,12 @@ import {
   type GenerationJob,
   type GenerationRequest,
 } from "./generation";
-import type { Project, ReuseDraft } from "./library";
+import { getProjects, reuseGeneration, type Project, type ReuseDraft } from "./library";
+import { apiRequest } from "./api";
+import { LyricsEditor } from "./LyricsEditor";
+import { DraftRecovery } from "./DraftRecovery";
+import { useRecoverableDraft } from "./useRecoverableDraft";
+import { isCompositionDraft, inputDraftHasContent, type CompositionDraft } from "./draftStorage";
 import {
   composePost,
   listPlans,
@@ -29,6 +35,7 @@ import {
   type ComparisonReport,
 } from "./composition";
 interface Props {
+  draftScope: string | null;
   projects: Project[];
   jobs: GenerationJob[];
   rememberJob: (job: GenerationJob) => void;
@@ -49,6 +56,7 @@ const emptyRequest: GenerationRequest = {
   project_id: null,
 };
 export default function ComposeWorkspace({
+  draftScope,
   projects,
   jobs,
   rememberJob,
@@ -80,6 +88,7 @@ export default function ComposeWorkspace({
   const [editorRevision, setEditorRevision] = useState(0);
   const [scoreTitle, setScoreTitle] = useState("");
   const [busy, setBusy] = useState(false);
+  const [workspaceExpanded, setWorkspaceExpanded] = useState(false);
   const operations = useRef(new DraftOperationGate());
   const [pendingPlan, setPendingPlan] = useState<string | null>(null);
   const [reusedSource, setReusedSource] = useState<ReuseDraft | null>(null);
@@ -97,6 +106,45 @@ export default function ComposeWorkspace({
   const [allowTempo, setAllowTempo] = useState(false);
   const [exactConfirm, setExactConfirm] = useState(false);
   const [pendingDraft, setPendingDraft] = useState<ReuseDraft | null>(null);
+  const [recoveredAncestry, setRecoveredAncestry] = useState<{ parent_score_id: string | null; source_generation_id: string | null } | null>(null);
+  const ancestry = recoveredAncestry ?? scoreAncestry(plan, score, reusedSource);
+  const recovery = useRecoverableDraft<CompositionDraft>({
+    scope: draftScope, workspace: "compose", validate: isCompositionDraft,
+    hasContent: value => inputDraftHasContent(value) || Boolean(value.abc || value.scoreTitle || value.editorMetadata || value.planId || value.scoreId),
+    data: { title: request.title, style: request.style, lyrics: request.lyrics, mode: request.cot,
+      seed: request.seed, guidance, projectId: request.project_id ?? "", parentId: request.parent_generation_id ?? null,
+      abc, scoreTitle, editorMetadata, planId: plan?.plan.id ?? null, scoreId: score?.id ?? null,
+      parentScoreId: ancestry.parent_score_id, sourceGenerationId: ancestry.source_generation_id },
+    onRestore: async value => {
+      const [projectResult, planResult, scoreResult, parentScoreResult, sourceResult, parentResult] = await Promise.allSettled([
+        value.projectId ? getProjects() : Promise.resolve(null),
+        value.planId ? loadPlan(value.planId) : Promise.resolve(null),
+        value.scoreId ? apiRequest<ScoreVersion>(`/api/compose/scores/${value.scoreId}`) : Promise.resolve(null),
+        value.parentScoreId ? apiRequest<ScoreVersion>(`/api/compose/scores/${value.parentScoreId}`) : Promise.resolve(null),
+        value.sourceGenerationId ? reuseGeneration(value.sourceGenerationId) : Promise.resolve(null),
+        value.parentId ? reuseGeneration(value.parentId) : Promise.resolve(null),
+      ]);
+      const notices: string[] = [];
+      const restoredPlan = planResult.status === "fulfilled" ? planResult.value : null;
+      const restoredScore = scoreResult.status === "fulfilled" ? scoreResult.value : null;
+      const projectValid = !value.projectId || projectResult.status === "fulfilled" && projectResult.value?.projects.some(project => project.id === value.projectId);
+      if (!projectValid) notices.push("The old project could not be verified; the draft is unassigned.");
+      if ([planResult, scoreResult, parentScoreResult, sourceResult, parentResult].some(result => result.status === "rejected"))
+        notices.push("Some saved source links could not be verified and were removed. Recovered text and phrase references were retained.");
+      const next: GenerationRequest = { title: value.title, style: value.style, lyrics: value.lyrics,
+        cot: value.mode, seed: value.seed, cfg_scale: null, project_id: projectValid ? value.projectId || null : null,
+        parent_generation_id: parentResult.status === "fulfilled" ? value.parentId : null };
+      setRequest(next); setInputBaseline(JSON.stringify(emptyRequest)); setGuidance(value.guidance);
+      setPlan(restoredPlan); setScore(restoredScore); setReusedSource(null);
+      setRecoveredAncestry({ parent_score_id: parentScoreResult.status === "fulfilled" ? value.parentScoreId : null,
+        source_generation_id: sourceResult.status === "fulfilled" ? value.sourceGenerationId : null });
+      setAbc(value.abc); setBaseline(restoredScore?.abc ?? restoredPlan?.abc ?? "");
+      setEditorMetadata(value.editorMetadata); setMetadataBaseline(JSON.stringify(restoredScore?.editor_metadata ?? null));
+      setScoreTitle(value.scoreTitle); setEditorRevision(previous => previous + 1);
+      setValidation(null); setComparison(null); setExactConfirm(false); setError("");
+      setNotice(["Draft restored. Validate before rendering; no job was queued.", ...notices].join(" "));
+    },
+  });
   const dirty = abc !== baseline || JSON.stringify(editorMetadata) !== metadataBaseline;
   const inputsDirty =
     JSON.stringify(request) !== inputBaseline ||
@@ -125,14 +173,8 @@ export default function ComposeWorkspace({
     if (draft) setPendingDraft(draft);
   }, [draft]);
   useEffect(() => {
-    if (openPlanId) void choosePlan(openPlanId);
-  }, [openPlanId, openPlanNonce]);
-  useEffect(() => {
-    if (!dirty && !inputsDirty) return;
-    const warn = (event: BeforeUnloadEvent) => event.preventDefault();
-    window.addEventListener("beforeunload", warn);
-    return () => window.removeEventListener("beforeunload", warn);
-  }, [dirty, inputsDirty]);
+    if (openPlanId && recovery.ready) void choosePlan(openPlanId);
+  }, [openPlanId, openPlanNonce, recovery.ready]);
   async function action(task: () => Promise<void>) {
     if (operations.current.busy) {
       setNotice(
@@ -152,6 +194,12 @@ export default function ComposeWorkspace({
     }
   }
   function mayReplace() {
+    if (!draftScope || recovery.restoring) return false;
+    if (!recovery.ready) {
+      // Loading a library item starts a new working copy; recovery snapshots stay intact.
+      recovery.startFresh();
+      return true;
+    }
     return (
       (!dirty && !inputsDirty) ||
       window.confirm(
@@ -161,6 +209,7 @@ export default function ComposeWorkspace({
   }
   function replace(text: string, title: string) {
     setReusedSource(null);
+    setRecoveredAncestry(null);
     setAbc(text);
     setBaseline(text);
     setEditorMetadata(null);
@@ -203,9 +252,10 @@ export default function ComposeWorkspace({
     const metadata = value.editor_metadata ?? null;
     setEditorMetadata(metadata);
     setMetadataBaseline(JSON.stringify(metadata));
-    setRequest((previous) => ({ ...previous, project_id: value.project_id, ...(metadata ? { lyrics: metadata.lyrics } : {}) }));
+    setRequest((previous) => ({ ...previous, project_id: value.project_id, ...(metadata ? { lyrics: metadata.working_lyrics ?? metadata.lyrics } : {}) }));
   }
   function nativeRequest(): GenerationRequest {
+    if (!recovery.ready || recovery.restoring) throw Error("Finish draft recovery first.");
     if (!validateSeed(request.seed))
       throw Error("Seed must be an integer from 0 to 9223372036854775807.");
     if (!request.style.trim() || !request.lyrics.trim())
@@ -263,7 +313,7 @@ export default function ComposeWorkspace({
           </p>
           <button
             className="primary-button"
-            disabled={busy}
+            disabled={busy || !recovery.ready || recovery.restoring}
             onClick={() => void choosePlan(pendingPlan)}
           >
             Load requested plan
@@ -284,7 +334,7 @@ export default function ComposeWorkspace({
           ))}
           <button
             className="primary-button"
-            disabled={busy}
+            disabled={busy || !recovery.ready || recovery.restoring}
             onClick={() => {
               if (!mayReplace()) return;
               applyRequest(pendingDraft.request);
@@ -309,9 +359,10 @@ export default function ComposeWorkspace({
           </button>
         </div>
       )}
-      <div className="compose-grid">
-        <section className="panel">
+      <div className={`compose-grid${workspaceExpanded ? " compose-grid-expanded" : ""}`}>
+        <section className="panel" hidden={workspaceExpanded}>
           <h2>Plan a composition</h2>
+          <DraftRecovery recovery={recovery} disabled={busy} />
           <p>
             Generate a symbolic plan without audio, or render a saved score
             using these inputs.
@@ -323,7 +374,7 @@ export default function ComposeWorkspace({
             onClick={() => void action(async () => rememberJob(await cancelGeneration(currentJob.id)))}
           >{currentJob.cancel_requested ? "Stopping…" : "Cancel"}</button>
         </div>}
-        <fieldset className="settings-fieldset" disabled={busy}>
+        <fieldset className="settings-fieldset" disabled={busy || !recovery.ready || recovery.restoring}>
             <div className="field">
               <label htmlFor="compose-project">Project</label>
               <select
@@ -367,18 +418,8 @@ export default function ComposeWorkspace({
                 }
               />
             </div>
-            <div className="field">
-              <label htmlFor="compose-lyrics">Lyrics</label>
-              <textarea
-                id="compose-lyrics"
-                rows={7}
-                maxLength={100000}
-                value={request.lyrics}
-                onChange={(event) =>
-                  setRequest({ ...request, lyrics: event.target.value })
-                }
-              />
-            </div>
+            <LyricsEditor id="compose-lyrics" value={request.lyrics} rows={7}
+              onChange={lyrics => setRequest(previous => ({ ...previous, lyrics }))} />
             <div className="fields-grid">
               <div className="field">
                 <label htmlFor="compose-cot">Conditioning</label>
@@ -474,7 +515,7 @@ export default function ComposeWorkspace({
                   job.status === "complete" && (
                     <button
                       className="secondary-button"
-                      disabled={busy}
+                      disabled={busy || !recovery.ready || recovery.restoring}
                       onClick={() => void choosePlan(job.id)}
                     >
                       Load plan
@@ -491,18 +532,29 @@ export default function ComposeWorkspace({
               </article>
             ))}
         </section>
-        <section className="panel compose-editor-panel">
+        <section id="compose-score-workspace" className="panel compose-editor-panel">
           <div className="section-heading">
             <h2>Score workspace</h2>
-            <button
-              className="text-button"
-              disabled={busy}
-              onClick={() => void refresh()}
-            >
-              Refresh library
-            </button>
+            <div className="compose-workspace-actions">
+              <button
+                type="button"
+                className="secondary-button"
+                aria-controls="compose-score-workspace"
+                aria-pressed={workspaceExpanded}
+                onClick={() => setWorkspaceExpanded(previous => !previous)}
+              >
+                {workspaceExpanded ? "Restore columns" : "Expand workspace"}
+              </button>
+              <button
+                className="text-button"
+                disabled={busy || !draftScope || recovery.restoring}
+                onClick={() => void refresh()}
+              >
+                Refresh library
+              </button>
+            </div>
           </div>
-          <fieldset className="settings-fieldset" disabled={busy}>
+          <fieldset className="settings-fieldset" disabled={busy || !draftScope || recovery.restoring}>
             <div className="field">
               <label htmlFor="compose-plan">Saved native plan</label>
               <select
@@ -521,51 +573,53 @@ export default function ComposeWorkspace({
                 ))}
               </select>
             </div>
-            {plan && (
-              <div className="notice">
-                <p>
-                  Original plan: {plan.plan.cot} · seed {plan.plan.seed}
-                  {plan.plan.truncated ? " · Truncated" : ""}
-                </p>
-                {plan.warnings.map((warning, index) => (
-                  <p key={index}>{warning}</p>
-                ))}
-                <p>
-                  Exact reuse retains original style, lyrics, seed, mode and
-                  verified tokens. It uses the currently configured model and
-                  decoder; identical audio is not guaranteed. Editor changes are
-                  not included.
-                </p>
-                <button
-                  className="secondary-button"
-                  disabled={!plan.can_reuse_exact}
-                  onClick={() => setExactConfirm(true)}
-                >
-                  Render original plan exactly…
-                </button>
-                {exactConfirm && (
+            <fieldset className="settings-fieldset" disabled={!recovery.ready}>
+              {plan && (
+                <div className="notice">
                   <p>
-                    <button
-                      className="primary-button"
-                      onClick={() =>
-                        void action(async () => {
-                          queued(await renderPlan(plan.plan.id));
-                          setExactConfirm(false);
-                        })
-                      }
-                    >
-                      Queue exact plan render
-                    </button>{" "}
-                    <button
-                      className="text-button"
-                      onClick={() => setExactConfirm(false)}
-                    >
-                      Keep editing
-                    </button>
+                    Original plan: {plan.plan.cot} · seed {plan.plan.seed}
+                    {plan.plan.truncated ? " · Truncated" : ""}
                   </p>
-                )}
-              </div>
-            )}
+                  {plan.warnings.map((warning, index) => (
+                    <p key={index}>{warning}</p>
+                  ))}
+                  <p>
+                    Exact reuse retains original style, lyrics, seed, mode and
+                    verified tokens. It uses the currently configured model and
+                    decoder; identical audio is not guaranteed. Editor changes are
+                    not included.
+                  </p>
+                  <button
+                    className="secondary-button"
+                    disabled={!plan.can_reuse_exact}
+                    onClick={() => setExactConfirm(true)}
+                  >
+                    Render original plan exactly…
+                  </button>
+                  {exactConfirm && (
+                    <p>
+                      <button
+                        className="primary-button"
+                        onClick={() =>
+                          void action(async () => {
+                            queued(await renderPlan(plan.plan.id));
+                            setExactConfirm(false);
+                          })
+                        }
+                      >
+                        Queue exact plan render
+                      </button>{" "}
+                      <button
+                        className="text-button"
+                        onClick={() => setExactConfirm(false)}
+                      >
+                        Keep editing
+                      </button>
+                    </p>
+                  )}
+                </div>
+              )}
+            </fieldset>
             <div className="field">
               <label htmlFor="compose-score">Saved ABC version</label>
               <select
@@ -587,70 +641,73 @@ export default function ComposeWorkspace({
                 ))}
               </select>
             </div>
-            <div className="field">
-              <label htmlFor="score-title">Score version title</label>
-              <input
-                id="score-title"
-                maxLength={200}
-                value={scoreTitle}
-                onChange={(event) => setScoreTitle(event.target.value)}
-              />
-            </div>
-            <div className="job-actions">
-              <label className="secondary-button">
-                Import ABC
+            <fieldset className="settings-fieldset" disabled={!recovery.ready}>
+              <div className="field">
+                <label htmlFor="score-title">Score version title</label>
                 <input
-                  className="abc-file-input"
-                  type="file"
-                  accept=".abc,.txt,text/plain"
-                  onChange={(event) => {
-                    const file = event.target.files?.[0];
-                    event.target.value = "";
-                    if (!file || !mayReplace()) return;
-                    void action(async () => {
-                      if (file.size > 400000)
-                        throw Error(
-                          "ABC file is too large. Maximum 100,000 characters.",
-                        );
-                      const text = await file.text();
-                      if (text.length > 100000)
-                        throw Error("ABC exceeds 100,000 characters.");
-                      setPlan(null);
-                      setScore(null);
-                      replace("", file.name);
-                      setAbc(text);
-                    });
-                  }}
+                  id="score-title"
+                  maxLength={200}
+                  value={scoreTitle}
+                  onChange={(event) => setScoreTitle(event.target.value)}
                 />
-              </label>
-              <button
-                className="secondary-button"
-                disabled={!abc}
-                onClick={() => {
-                  const url = URL.createObjectURL(
-                    new Blob([abc], { type: "text/plain;charset=utf-8" }),
-                  );
-                  const anchor = document.createElement("a");
-                  anchor.href = url;
-                  anchor.download = "score.abc";
-                  anchor.click();
-                  setTimeout(() => URL.revokeObjectURL(url), 1000);
-                }}
-              >
-                Export draft ABC
-              </button>
-            </div>
+              </div>
+              <div className="job-actions">
+                <label className="secondary-button">
+                  Import ABC
+                  <input
+                    className="abc-file-input"
+                    type="file"
+                    accept=".abc,.txt,text/plain"
+                    onChange={(event) => {
+                      const file = event.target.files?.[0];
+                      event.target.value = "";
+                      if (!file || !mayReplace()) return;
+                      void action(async () => {
+                        if (file.size > 400000)
+                          throw Error(
+                            "ABC file is too large. Maximum 100,000 characters.",
+                          );
+                        const text = await file.text();
+                        if (text.length > 100000)
+                          throw Error("ABC exceeds 100,000 characters.");
+                        setPlan(null);
+                        setScore(null);
+                        replace("", file.name);
+                        setAbc(text);
+                      });
+                    }}
+                  />
+                </label>
+                <button
+                  className="secondary-button"
+                  disabled={!abc}
+                  onClick={() => {
+                    const url = URL.createObjectURL(
+                      new Blob([abc], { type: "text/plain;charset=utf-8" }),
+                    );
+                    const anchor = document.createElement("a");
+                    anchor.href = url;
+                    anchor.download = "score.abc";
+                    anchor.click();
+                    setTimeout(() => URL.revokeObjectURL(url), 1000);
+                  }}
+                >
+                  Export draft ABC
+                </button>
+              </div>
+            </fieldset>
           </fieldset>
-          <div inert={busy}>
+          <div inert={busy || !recovery.ready || recovery.restoring}>
             <VisualScoreEditor
               key={editorRevision}
               abc={abc}
               lyrics={request.lyrics}
+              onLyricsChange={lyrics => setRequest(previous => ({ ...previous, lyrics }))}
               onChange={setAbc}
               metadata={editorMetadata}
               onMetadataChange={setEditorMetadata}
               validation={currentValidation}
-              active={active && !busy}
+              active={active && !busy && recovery.ready && !recovery.restoring}
               onValidate={() => void action(async () => setValidation({
                 abc,
                 value: await composePost<ValidationReport>("validate", { abc }),
@@ -662,7 +719,7 @@ export default function ComposeWorkspace({
             {dirty ? "Unsaved composition changes" : "Draft matches saved source"} ·
             Ctrl/Cmd+Z undo · Ctrl/Cmd+F search
           </p>
-          <fieldset className="settings-fieldset" disabled={busy}>
+          <fieldset className="settings-fieldset" disabled={busy || !recovery.ready || recovery.restoring}>
             <div className="job-actions">
               <button
                 className="primary-button"
@@ -672,11 +729,13 @@ export default function ComposeWorkspace({
                     const value = await saveScore({
                       title: scoreTitle,
                       abc,
-                      editor_metadata: editorMetadata,
+                      editor_metadata: metadataForScoreSave(editorMetadata, request.lyrics),
                       project_id: request.project_id ?? null,
-                      ...scoreAncestry(plan, score, reusedSource),
+                      ...ancestry,
                     });
                     setScore(value);
+                    setEditorMetadata(value.editor_metadata ?? null);
+                    setRecoveredAncestry(null);
                     setBaseline(value.abc);
                     setMetadataBaseline(JSON.stringify(value.editor_metadata ?? null));
                     setNotice(`Saved new immutable score version ${value.id}`);

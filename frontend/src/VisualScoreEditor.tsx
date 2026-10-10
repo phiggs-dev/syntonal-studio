@@ -1,18 +1,21 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AbcEditor, ScorePreview } from "./AbcEditor";
+import { LyricsLane } from "./LyricsLane";
+import { lyricLineSpans, replaceLyricLine, updatePhrase } from "./lyricsLaneModel";
 import { PianoRoll } from "./PianoRoll";
 import { ScorePlayback } from "./ScorePlayback";
 import type { ValidationReport } from "./composition";
 import {
   chainInfo, durationLabel, editTimelineChord, editTimelineEvent, insertTimelineNote, moveTimelineEvent, parseTimeline,
-  pitchLabel, sectionLyrics, type EditorMetadata, type TimelineBar, type TimelineEvent, type VoiceName,
+  pitchLabel, type EditorMetadata, type TimelineBar, type TimelineEvent, type VoiceName,
 } from "./visualScore";
 
-interface Snapshot { abc: string; metadata: EditorMetadata | null }
+interface Snapshot { abc: string; lyrics: string; metadata: EditorMetadata | null }
 interface Props {
   abc: string;
   lyrics: string;
   onChange: (value: string) => void;
+  onLyricsChange: (value: string) => void;
   metadata: EditorMetadata | null;
   onMetadataChange: (value: EditorMetadata | null) => void;
   validation: ValidationReport | null;
@@ -27,7 +30,8 @@ const durationChoices = [
   { label: "Dotted half", whole: 3 / 4 }, { label: "Whole", whole: 1 }, { label: "Two whole notes", whole: 2 },
 ];
 
-export function VisualScoreEditor({ abc, lyrics, onChange, metadata, onMetadataChange, validation, onValidate, active }: Props) {
+export function VisualScoreEditor({ abc, lyrics, onChange, onLyricsChange, metadata, onMetadataChange, validation, onValidate, active }: Props) {
+  const editorRoot = useRef<HTMLDivElement>(null);
   const timeline = useMemo(() => parseTimeline(abc), [abc]);
   const [sectionIndex, setSectionIndex] = useState(0);
   const [voice, setVoice] = useState<VoiceName>("Vocal");
@@ -44,49 +48,52 @@ export function VisualScoreEditor({ abc, lyrics, onChange, metadata, onMetadataC
   const [lastBar, setLastBar] = useState(1);
   const [lyricLine, setLyricLine] = useState("");
   const [history, setHistory] = useState<{ past: Snapshot[]; future: Snapshot[] }>({ past: [], future: [] });
-  const expected = useRef({ abc, metadata: JSON.stringify(metadata) });
+  const expected = useRef({ abc, lyrics, metadata: JSON.stringify(metadata) });
   const section = timeline.sections[Math.min(sectionIndex, timeline.sections.length - 1)];
   const bars = timeline.bars[voice].filter(bar => bar.section === section?.index);
   const selectedBar = bars.find(bar => bar.id === selection?.bar);
   const selectedEvent = selectedBar?.events.find(event => event.id === selection?.event);
   const info = selectedBar && selectedEvent ? chainInfo(timeline, selectedBar, selectedEvent) : null;
   const occurrence = section ? timeline.sections.slice(0, section.index).filter(item => item.title.toLowerCase() === section.title.toLowerCase()).length : 0;
-  const words = section ? sectionLyrics(lyrics, section.title, occurrence) : "";
-  const lines = words.split(/\r?\n/).filter(line => line.trim());
+  const lines = section ? lyricLineSpans(lyrics, section.title, occurrence).map(line => line.text) : [];
   const metadataCurrent = !metadata || metadata.lyrics === lyrics;
-  const phrases = metadataCurrent ? metadata?.phrases.filter(phrase => phrase.section === section?.index) ?? [] : [];
-  const previewFirst = Math.max(section?.firstBar ?? 1, firstBar);
+  const phrases = metadataCurrent ? metadata?.phrases.filter(phrase => phrase.section === section?.index && phrase.text === lines[phrase.line] && bars.some(bar => bar.number === phrase.first_bar) && bars.some(bar => bar.number === phrase.last_bar)) ?? [] : [];
+  const previewFirst = Math.min(section?.lastBar ?? 1, Math.max(section?.firstBar ?? 1, firstBar));
   const previewLast = Math.min(section?.lastBar ?? 1, Math.max(previewFirst, lastBar));
   const rangeFirst = timeline.bars[voice].find(bar => bar.number === previewFirst);
   const rangeLast = timeline.bars[voice].find(bar => bar.number === previewLast);
 
   useEffect(() => {
-    if (expected.current.abc !== abc || expected.current.metadata !== JSON.stringify(metadata)) {
+    if (expected.current.abc !== abc || expected.current.lyrics !== lyrics || expected.current.metadata !== JSON.stringify(metadata)) {
       setHistory({ past: [], future: [] });
       setSelection(null); setChordSelection(null); setError("");
-      expected.current = { abc, metadata: JSON.stringify(metadata) };
+      expected.current = { abc, lyrics, metadata: JSON.stringify(metadata) };
     }
-  }, [abc, metadata]);
+  }, [abc, metadata, lyrics]);
   function emit(snapshot: Snapshot) {
-    expected.current = { abc: snapshot.abc, metadata: JSON.stringify(snapshot.metadata) };
+    expected.current = { abc: snapshot.abc, lyrics: snapshot.lyrics, metadata: JSON.stringify(snapshot.metadata) };
     onChange(snapshot.abc); onMetadataChange(snapshot.metadata);
+    if (snapshot.lyrics !== lyrics) onLyricsChange(snapshot.lyrics);
     setSelection(null); setChordSelection(null); setError("");
+    const linked = snapshot.metadata?.lyrics === snapshot.lyrics
+      ? snapshot.metadata.phrases.find(phrase => phrase.section === section?.index && String(phrase.line) === lyricLine) : undefined;
+    if (linked) { setFirstBar(linked.first_bar); setLastBar(linked.last_bar); }
   }
-  function commit(nextAbc: string, nextMetadata = metadata) {
-    if (nextAbc === abc && JSON.stringify(nextMetadata) === JSON.stringify(metadata)) return;
-    setHistory(previous => ({ past: [...previous.past.slice(-99), { abc, metadata }], future: [] }));
-    emit({ abc: nextAbc, metadata: nextMetadata });
+  function commit(nextAbc: string, nextMetadata = metadata, nextLyrics = lyrics) {
+    if (nextAbc === abc && nextLyrics === lyrics && JSON.stringify(nextMetadata) === JSON.stringify(metadata)) return;
+    setHistory(previous => ({ past: [...previous.past.slice(-99), { abc, lyrics, metadata }], future: [] }));
+    emit({ abc: nextAbc, lyrics: nextLyrics, metadata: nextMetadata });
   }
   function undo() {
     const previous = history.past.at(-1);
     if (!previous) return;
-    setHistory({ past: history.past.slice(0, -1), future: [{ abc, metadata }, ...history.future] });
+    setHistory({ past: history.past.slice(0, -1), future: [{ abc, lyrics, metadata }, ...history.future] });
     emit(previous); setMessage("Undid the last score edit.");
   }
   function redo() {
     const next = history.future[0];
     if (!next) return;
-    setHistory({ past: [...history.past, { abc, metadata }], future: history.future.slice(1) });
+    setHistory({ past: [...history.past, { abc, lyrics, metadata }], future: history.future.slice(1) });
     emit(next); setMessage("Redid the score edit.");
   }
   function attempt(task: () => string) {
@@ -97,19 +104,60 @@ export function VisualScoreEditor({ abc, lyrics, onChange, metadata, onMetadataC
     const selected = chainInfo(timeline, bar, event);
     setSelection({ bar: bar.id, event: event.id }); setChordSelection(null);
     setDuration(String(selected.duration)); setPitch(String(event.pitch ?? 60)); setError("");
-    setFirstBar(bar.number); setLastBar(bar.number);
+    const linked = phrases.find(phrase => phrase.first_bar <= bar.number && phrase.last_bar >= bar.number);
+    setLyricLine(linked ? String(linked.line) : "");
+    setFirstBar(linked?.first_bar ?? bar.number); setLastBar(linked?.last_bar ?? bar.number);
   }
   function resize(bar: TimelineBar, event: TimelineEvent, units: number) {
     return attempt(() => editTimelineEvent(timeline, bar.id, event.id, { duration: units }));
   }
-  function linkLine() {
-    if (!section || !lyricLine || previewFirst > previewLast) return;
-    const phrase = { section: section.index, line: Number(lyricLine), text: lines[Number(lyricLine)], first_bar: previewFirst, last_bar: previewLast };
-    const current = metadataCurrent ? metadata?.phrases ?? [] : [];
-    commit(abc, { lyrics, phrases: [...current.filter(item => !(item.section === phrase.section && item.line === phrase.line)), phrase] });
-    setMessage("Linked the lyric line to this bar range. This is a phrase reference, not syllable alignment.");
+  function canReplaceStalePhrases() {
+    return metadataCurrent || !metadata?.phrases.length || window.confirm("Replace the inactive phrase links with references for the current lyrics?");
   }
-  return <div className="visual-score-editor" onKeyDownCapture={event => {
+  function linkLine() {
+    if (!section || lyricLine === "" || previewFirst > previewLast || !canReplaceStalePhrases()) return;
+    try {
+      const phrase = { section: section.index, line: Number(lyricLine), text: lines[Number(lyricLine)], first_bar: previewFirst, last_bar: previewLast };
+      commit(abc, updatePhrase(metadata, lyrics, phrase));
+      setMessage("Linked the lyric line to these bars.");
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Unable to link this line."); }
+  }
+  function chooseBar(number: number) {
+    const linked = phrases.find(phrase => phrase.first_bar <= number && phrase.last_bar >= number);
+    setLyricLine(linked ? String(linked.line) : "");
+    setFirstBar(linked?.first_bar ?? number); setLastBar(linked?.last_bar ?? number);
+    setSelection(null); setChordSelection(null);
+  }
+  function chooseLine(line: number) {
+    const linked = phrases.find(phrase => phrase.line === line);
+    setLyricLine(String(line)); setSelection(null); setChordSelection(null);
+    if (linked) { setFirstBar(linked.first_bar); setLastBar(linked.last_bar); }
+    const bar = bars.find(item => item.number === linked?.first_bar);
+    if (bar && view === "piano") {
+      const viewport = editorRoot.current?.querySelector<HTMLElement>(".piano-roll-viewport");
+      if (viewport) viewport.scrollLeft = (bar.absolute - bars[0].absolute) * zoom * 4 / timeline.unitDenominator;
+    } else if (bar) editorRoot.current?.querySelector<HTMLElement>(`[data-timeline-bar="${bar.number}"]`)?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }
+  function editLine(line: number, text: string): boolean {
+    if (!section || !canReplaceStalePhrases()) return false;
+    try {
+      const nextLyrics = replaceLyricLine(lyrics, section.title, occurrence, line, text);
+      const current = metadataCurrent ? metadata?.phrases ?? [] : [];
+      const nextMetadata = { ...metadata, lyrics: nextLyrics, working_lyrics: nextLyrics, phrases: current.map(phrase => phrase.section === section.index && phrase.line === line ? { ...phrase, text: text.trim() } : phrase) };
+      commit(abc, nextMetadata, nextLyrics);
+      setMessage("Updated this lyric line. Its phrase range is preserved."); return true;
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Unable to edit this line."); return false; }
+  }
+  const highlighted = lyricLine !== "" ? { first: previewFirst, last: previewLast } : null;
+  const timelineZoom = Math.max(zoom, 240 / Math.min(...bars.map(bar => bar.length * 4 / timeline.unitDenominator)));
+  const barWidths = bars.map(bar => bar.length * 4 / timeline.unitDenominator * (view === "piano" ? zoom : timelineZoom));
+  return <div className="visual-score-editor" ref={editorRoot} onScrollCapture={event => {
+    const source = event.target as HTMLElement;
+    if (!source.matches(".piano-roll-viewport, .score-timeline, .lyrics-lane-scroll")) return;
+    for (const target of editorRoot.current?.querySelectorAll<HTMLElement>(".piano-roll-viewport, .score-timeline, .lyrics-lane-scroll") ?? []) {
+      if (target !== source && Math.abs(target.scrollLeft - source.scrollLeft) > 1) target.scrollLeft = source.scrollLeft;
+    }
+  }} onKeyDownCapture={event => {
     if (!(event.ctrlKey || event.metaKey)) return;
     // Text inputs keep their own text undo; the score history also includes Advanced edits.
     const target = event.target as HTMLElement;
@@ -154,31 +202,11 @@ export function VisualScoreEditor({ abc, lyrics, onChange, metadata, onMetadataC
         <ul>{timeline.errors.map((issue, index) => <li key={index}>{issue}</li>)}</ul>
         <p>The original source remains available in Advanced.</p>
       </div>}
-      <details className="score-phrase-panel"><summary>Lyrics and phrase references</summary>
-        <label>Lyric line <select aria-label="Lyric line" value={lyricLine} onChange={event => setLyricLine(event.target.value)}>
-          <option value="">Choose a line to reference…</option>
-          {lines.map((line, index) => <option key={index} value={index}>{index + 1}. {line}</option>)}
-        </select></label>
-        {!lines.length && <p className="field-help">No matching lyrics in the current inputs for this section.</p>}
-        <div className="score-toolbar">
-          <label>From bar <select aria-label="First phrase bar" value={previewFirst} onChange={event => setFirstBar(Number(event.target.value))}>{bars.map(bar => <option key={bar.id} value={bar.number}>{bar.number}</option>)}</select></label>
-          <label>Through bar <select aria-label="Last phrase bar" value={previewLast} onChange={event => setLastBar(Number(event.target.value))}>{bars.filter(bar => bar.number >= previewFirst).map(bar => <option key={bar.id} value={bar.number}>{bar.number}</option>)}</select></label>
-          <button type="button" className="secondary-button" disabled={!lyricLine || !!timeline.errors.length} onClick={linkLine}>Link line to bars</button>
-        </div>
-        <p className="field-help">Choose a line and its bars for a phrase reference. These links are saved with new score versions; they do not assign syllables to notes.</p>
-        {!metadataCurrent && <div className="notice warning">Lyrics changed. Previous phrase links are inactive. Linking a line will replace them.
-          <button type="button" className="text-button" onClick={() => commit(abc, null)}>Discard previous links</button>
-        </div>}
-        {phrases.map((phrase, index) => <div className="score-phrase" key={index}>
-          <button type="button" className="text-button" onClick={() => { setFirstBar(phrase.first_bar); setLastBar(phrase.last_bar); setLyricLine(String(phrase.line)); }}>{phrase.text} · Bars {phrase.first_bar}–{phrase.last_bar}</button>
-          <button type="button" className="text-button" aria-label={`Remove phrase link ${phrase.text}`} onClick={() => commit(abc, { lyrics, phrases: (metadata?.phrases ?? []).filter(item => item !== phrase) })}>Remove</button>
-        </div>)}
-      </details>
       <ScorePlayback validation={validation} active={active} abc={abc}
         range={rangeFirst && rangeLast ? { start: rangeFirst.absolute * 4 / timeline.unitDenominator, end: (rangeLast.absolute + rangeLast.length) * 4 / timeline.unitDenominator, voice, label: `bars ${previewFirst}–${previewLast}` } : undefined} />
       {view === "notation" ? <><h4>Complete score notation</h4><ScorePreview abc={abc} /></> : view === "piano" ? (
         <PianoRoll score={timeline} bars={bars} zoom={zoom} selectedChain={selectedEvent?.chain}
-          phrases={phrases} active={active} onSelect={chooseEvent} onResize={resize}
+          highlighted={highlighted} onBarSelect={chooseBar} active={active} onSelect={chooseEvent} onResize={resize}
           onMove={(note, start, nextPitch) => attempt(() => moveTimelineEvent(timeline, note.bar.id, note.event.id, start, nextPitch))}
           onInsert={(bar, onset, length, nextPitch) => attempt(() => insertTimelineNote(timeline, bar.id, onset, length, nextPitch))}
           onDelete={note => attempt(() => editTimelineEvent(timeline, note.bar.id, note.event.id, { pitch: null }))}
@@ -188,10 +216,9 @@ export function VisualScoreEditor({ abc, lyrics, onChange, metadata, onMetadataC
         <p className="field-help">Blocks show actual lengths. Select a note, rest or chord. Drag a selected block’s right edge to resize, or use the duration controls below. Beat numbers follow the meter’s denominator.</p>
         <div className="score-timeline" tabIndex={0} aria-label={`${section.title} bar timeline`}>
           <div className="score-timeline-track">
-            {bars.map(bar => <section className={`score-bar ${bar.issues.length ? "score-bar-invalid" : ""}`} key={bar.id}
-              style={{ width: bar.length * 4 / timeline.unitDenominator * Math.max(zoom, 240 / Math.min(...bars.map(item => item.length * 4 / timeline.unitDenominator))) }} aria-label={`${voice} bar ${bar.number}`}>
-              <div className="score-bar-heading"><button type="button" className="text-button" onClick={() => { setFirstBar(bar.number); setLastBar(bar.number); }}>Bar {bar.number}</button><span>{bar.meter.join("/")}</span></div>
-              <div className="score-bar-phrases">{phrases.filter(phrase => phrase.first_bar <= bar.number && phrase.last_bar >= bar.number).map((phrase, index) => <span key={index}>{phrase.text}</span>)}</div>
+            {bars.map(bar => <section data-timeline-bar={bar.number} className={`score-bar ${highlighted && bar.number >= highlighted.first && bar.number <= highlighted.last ? "score-bar-highlighted" : ""} ${bar.issues.length ? "score-bar-invalid" : ""}`} key={bar.id}
+              style={{ width: barWidths[bars.indexOf(bar)] }} aria-label={`${voice} bar ${bar.number}`}>
+              <div className="score-bar-heading"><button type="button" className="text-button" onClick={() => chooseBar(bar.number)}>Bar {bar.number}</button><span>{bar.meter.join("/")}</span></div>
               <div className="score-chord-lane" aria-label={`Chords in bar ${bar.number}`}>
                 {bar.annotations.map((annotation, index) => annotation.kind === "chord" ? <button type="button" className="score-chord" key={index}
                   style={{ left: `${annotation.onset / bar.length * 100}%` }} disabled={!!timeline.errors.length}
@@ -240,6 +267,10 @@ export function VisualScoreEditor({ abc, lyrics, onChange, metadata, onMetadataC
           </div>
         </div>
       </>}
+      {view !== "notation" && <LyricsLane lines={lines} phrases={phrases} bars={bars} widths={barWidths} offset={view === "piano" ? 72 : 4}
+        selected={lyricLine} first={previewFirst} last={previewLast} stale={!metadataCurrent} disabled={!!timeline.errors.length}
+        onSelect={chooseLine} onBar={chooseBar} onRange={(first, last) => { setFirstBar(first); setLastBar(last); }} onLink={linkLine} onEdit={editLine}
+        onRemove={line => commit(abc, { ...metadata, lyrics, phrases: (metadata?.phrases ?? []).filter(phrase => !(phrase.section === section.index && phrase.line === line)) })} />}
       {selectedEvent && selectedBar && info && <form className="score-inspector" onSubmit={event => { event.preventDefault(); attempt(() => editTimelineEvent(timeline, selectedBar.id, selectedEvent.id, { duration: Number(duration) })); }}>
         <h4>{pitchLabel(selectedEvent.pitch)} · Bar {info.first.bar.number}, beat {1 + info.first.event.onset / (timeline.unitDenominator / info.first.bar.meter[1])}</h4>
         <p className="field-help">{info.members.length > 1 ? `Editing the complete tied note (${info.members.length} segments). ` : ""}Shortening leaves a rest. Lengthening consumes following silence, with ties across barlines. Other notes and chords stay in place.</p>
@@ -268,6 +299,6 @@ export function VisualScoreEditor({ abc, lyrics, onChange, metadata, onMetadataC
     <p role="status" className="field-help">{message}</p>
     <details><summary>Advanced · ABC source</summary><AbcEditor value={abc}
       onUndo={undo} onRedo={redo}
-      onChange={text => { commit(text, null); setMessage(metadata?.phrases.length ? "Source edited. Phrase links were cleared; Undo restores them." : "ABC draft updated."); }} /></details>
+      onChange={text => { commit(text, metadata?.alignment ? { ...metadata, phrases: [] } : null); setMessage(metadata?.phrases.length ? "Source edited. Phrase links were cleared; Undo restores them." : "ABC draft updated."); }} /></details>
   </div>;
 }
